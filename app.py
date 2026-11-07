@@ -26,50 +26,30 @@ def _nivel_key(status_filter):
     return FILTER_SOMENTE_CRITICAS if status_filter is None else status_filter
 
 
-DATA_CONFIG = {
-    "2022": {
-        "niveis": {
-            FILTER_SOMENTE_CRITICAS: "data/output/nivel_criticidade/2022/por_status/urnas_criticas_2022_1t.csv",
-            FILTER_COM_ATRASO:       "data/output/nivel_criticidade/2022/por_status/urnas_com_atraso_2022_1t.csv",
-            0:    "data/output/nivel_criticidade/2022/por_status/urnas_status_0_2022_1t.csv",
-            1:    "data/output/nivel_criticidade/2022/por_status/urnas_status_1_2022_1t.csv",
-            2:    "data/output/nivel_criticidade/2022/por_status/urnas_status_2_2022_1t.csv",
-            3:    "data/output/nivel_criticidade/2022/por_status/urnas_status_3_2022_1t.csv",
-            4:    "data/output/nivel_criticidade/2022/por_status/urnas_status_4_2022_1t.csv",
-        },
-        "modelos_urnas": {
-            FILTER_SOMENTE_CRITICAS: "data/output/modelos_urnas/df_somente_criticas_2022.zip",
-            FILTER_COM_ATRASO:       "data/output/modelos_urnas/df_com_atraso_2022.zip",
-            0:    "data/output/modelos_urnas/df_completas_n0_2022.zip",
-            1:    "data/output/modelos_urnas/df_completas_n1_2022.zip",
-            2:    "data/output/modelos_urnas/df_completas_n2_2022.zip",
-            3:    "data/output/modelos_urnas/df_completas_n3_2022.zip",
-            4:    "data/output/modelos_urnas/df_completas_n4_2022.zip",
-        },
-        "contingencia": "data/output/nivel_criticidade/2022/por_status/urnas_contingencia_2022.csv",
-    },
-    "2018": {
-        "niveis": {
-            FILTER_SOMENTE_CRITICAS: "data/output/nivel_criticidade/2018/por_status/urnas_criticas_2018_1t.csv",
-            FILTER_COM_ATRASO:       "data/output/nivel_criticidade/2018/por_status/urnas_com_atraso_2018_1t.csv",
-            0:    "data/output/nivel_criticidade/2018/por_status/urnas_status_0_2018_1t.csv",
-            1:    "data/output/nivel_criticidade/2018/por_status/urnas_status_1_2018_1t.csv",
-            2:    "data/output/nivel_criticidade/2018/por_status/urnas_status_2_2018_1t.csv",
-            3:    "data/output/nivel_criticidade/2018/por_status/urnas_status_3_2018_1t.csv",
-            4:    "data/output/nivel_criticidade/2018/por_status/urnas_status_4_2018_1t.csv",
-        },
-        "modelos_urnas": {
-            FILTER_SOMENTE_CRITICAS: "data/output/modelos_urnas/df_somente_criticas_2018.zip",
-            FILTER_COM_ATRASO:       "data/output/modelos_urnas/df_com_atraso_2018.zip",
-            0:    "data/output/modelos_urnas/df_completas_n0_2018.zip",
-            1:    "data/output/modelos_urnas/df_completas_n1_2018.zip",
-            2:    "data/output/modelos_urnas/df_completas_n2_2018.zip",
-            3:    "data/output/modelos_urnas/df_completas_n3_2018.zip",
-            4:    "data/output/modelos_urnas/df_completas_n4_2018.zip",
-        },
-        "contingencia": "data/output/nivel_criticidade/2018/por_status/urnas_contingencia_2018.csv",
-    },
+_ANOS = ("2018", "2022", "2026")
+
+_NIVEIS_TPL = {
+    FILTER_SOMENTE_CRITICAS: "urnas_criticas_{a}_1t.csv",
+    FILTER_COM_ATRASO:       "urnas_com_atraso_{a}_1t.csv",
+    **{n: f"urnas_status_{n}_{{a}}_1t.csv" for n in range(5)},
 }
+_MODELOS_TPL = {
+    FILTER_SOMENTE_CRITICAS: "df_somente_criticas_{a}.zip",
+    FILTER_COM_ATRASO:       "df_com_atraso_{a}.zip",
+    **{n: f"df_completas_n{n}_{{a}}.zip" for n in range(5)},
+}
+
+
+def _build_config(ano: str) -> dict:
+    p = lambda grupo, tpl: f"data/output/{ano}/{grupo}/{tpl.format(a=ano)}"
+    return {
+        "niveis":        {k: p("por_status", t) for k, t in _NIVEIS_TPL.items()},
+        "modelos_urnas": {k: p("modelos_urnas", t) for k, t in _MODELOS_TPL.items()},
+        "contingencia":  p("por_status", "urnas_contingencia_{a}.csv"),
+    }
+
+
+DATA_CONFIG = {a: _build_config(a) for a in _ANOS}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURAÇÃO DA PÁGINA
@@ -393,60 +373,96 @@ st.markdown("""
 # ═══════════════════════════════════════════════════════════════════════════════
 # CACHE DE DADOS
 # ═══════════════════════════════════════════════════════════════════════════════
-# ── Mapa completo: caminho local → file_id no Google Drive ────────────────────
+# ── IDs do Google Drive: nome do arquivo → file_id, por ano ────────────────────
+# O caminho local NÃO é repetido aqui: sai de DATA_CONFIG (fonte única).
+_DRIVE_IDS: dict[str, dict[str, str]] = {
+    "2018": {
+        "urnas_criticas_2018_1t.csv":   "1BA9-Or_bpb1LyF9aEqMaZ6r0pLbRlhm7",
+        "urnas_com_atraso_2018_1t.csv": "1vOz3M5yOuXpgfwi49PiI_5LO7DdGQxws",
+        "urnas_status_0_2018_1t.csv":   "1K6KuMoKG9-1z2ndzwebpYILoPEW5ClG8",
+        "urnas_status_1_2018_1t.csv":   "1R5rsrCY5WO2dbNytjEaLCvYOLZUXhN6f",
+        "urnas_status_2_2018_1t.csv":   "1D70Qr5ACoVo-Wmo_MbRStv7iCASTjshd",
+        "urnas_status_3_2018_1t.csv":   "1usp4G9yY1R3uIfZ5tbiH3IO90QA03LQ2",
+        "urnas_status_4_2018_1t.csv":   "1DbTNQjYFHEVjIcCQP0anDswDtLhAgTZH",
+        "urnas_contingencia_2018.csv":  "1Cjlujls9MuJFoqbZ36NYrxoyoB7nAa_R",
+        "df_somente_criticas_2018.zip": "1pJH33pfId2DOSKPAR6Psvf7NFIa_Pu9t",
+        "df_com_atraso_2018.zip":       "1sTPFowwBcnZ6mZeIS1NRufriCblwRxlk",
+        "df_completas_n0_2018.zip":     "1Wy8X1lcDwYBLLNArd2NaomRCJiMa-BGJ",
+        "df_completas_n1_2018.zip":     "1cptbA6bQQhhiQfLLRwN0f0kL9dIjaAx0",
+        "df_completas_n2_2018.zip":     "1qdkUrv2gAsl6anICVsuUj6dpXLLGYLye",
+        "df_completas_n3_2018.zip":     "1A5_4O_Lv3VXrcvxrLqTUxu0AhJwtUIAT",
+        "df_completas_n4_2018.zip":     "1kFg3mBXgLfJizfnAr1fKaU0sfgy9n4pS",
+    },
+    "2022": {
+        "urnas_criticas_2022_1t.csv":   "1Jj6wloqWoT1Kmvvqy5IVr5etl3W07Zix",
+        "urnas_com_atraso_2022_1t.csv": "1fcUiEMZjsY6sT5Xb_OUEUX1yUS26JmdT",
+        "urnas_status_0_2022_1t.csv":   "1fdZ3-aldWOaYquEDByeETRzncddK6YFv",
+        "urnas_status_1_2022_1t.csv":   "1M5qi99ozcIiH-b6dYEY8aW0QFSNXZL_G",
+        "urnas_status_2_2022_1t.csv":   "1g3PB6_w3IcSO5d-NBWsvHwmwcFP4hT5l",
+        "urnas_status_3_2022_1t.csv":   "1gfrMr0NRWujToXc1n9_EqJscgPjuuyNT",
+        "urnas_status_4_2022_1t.csv":   "1AvFF0tV0Ews5WFMijn6ECZ8af-iaSSJV",
+        "urnas_contingencia_2022.csv":  "1zKfiVOtn-CKdPp1Yq_S8w34oeGyDIKTC",
+        "df_somente_criticas_2022.zip": "1LRMPFX5dXX80Bwfq5Tfv_ohcVYi-4Y6r",
+        "df_com_atraso_2022.zip":       "1kn3a9JpHcQwq31V0L6ja-iesh_qXmOOb",
+        "df_completas_n0_2022.zip":     "1zaos2fFT2znQ_Jx8YWQBQDaEpWlua1bU",
+        "df_completas_n1_2022.zip":     "1Uqf64CWc_C1ztNMYMu615UMKokTa3__I",
+        "df_completas_n2_2022.zip":     "156RJ6iHyDPMloWY1ksQOLNUct8v307LO",
+        "df_completas_n3_2022.zip":     "1z7GyYvf_3FZXjrwIT8O8Mnn0YWxeL-q9",
+        "df_completas_n4_2022.zip":     "1ze4KpuChipazFTC0YvqHRfnXqbVLNa5I",
+    },
+    "2026": {
+        "urnas_criticas_2026_1t.csv":   "1_qkrn5Y_pMmRF271dbYwUvJ2Jct4AOF-",
+        "urnas_com_atraso_2026_1t.csv": "14uQjx9HCJK_IpOBhkPEVVfz8uP_aWAPC",
+        "urnas_status_0_2026_1t.csv":   "1fNRQmBmS8XraSjh4UymcUQcWdCuo0uJe",
+        "urnas_status_1_2026_1t.csv":   "1ZPNSgjDbCydZEl-3Tpt4FVo_KXdBm15b",
+        "urnas_status_2_2026_1t.csv":   "1mFVIbTROo4ibttwIQkThkSY6XK1zqXqT",
+        "urnas_status_3_2026_1t.csv":   "1GoPRNtBcBj5YdpM-t5dBCwOmaTf0SX_a",
+        "urnas_status_4_2026_1t.csv":   "1_NE5Wa_CPCtY2XqQSvqDGSn8FjUcTHck",
+        "urnas_contingencia_2026.csv":  "1JsHXMU-ckQKU3nIecUKMRUcBhMpus-1w",
+        "df_somente_criticas_2026.zip": "1owUx9Qgwc5PRx7kb9NYR1JqviOOvf82M",
+        "df_com_atraso_2026.zip":       "1EmtWGhIlCLVoXb84y2p4dfSXGSCjky-x",
+        "df_completas_n0_2026.zip":     "1hYBkn58zL1_ti1WwF-v8JbY09iQ3j6Xb",
+        "df_completas_n1_2026.zip":     "1PdIx-aoYSMzzo57Fc-3N5u6lBAeM3hzV",
+        "df_completas_n2_2026.zip":     "1vmA71Bxj4b2uZj_r_kiPfVYT6hGKOmuf",
+        "df_completas_n3_2026.zip":     "1QRG8Jqi5yjROd-o3pXLnyH0UR_rg-Lox",
+        "df_completas_n4_2026.zip":     "1yDlLD5i863pEkg9yNrtnwoiIG-txmTS3",
+    },
+}
+
+# Arquivos fora de DATA_CONFIG (consumidos por src/tab_geo e afins): caminho local → file_id
+_EXTRA_FILES: dict[str, str] = {
+    "data/datasets/Tabela_Configuracoes.csv": "1uOjGX6_R1_K-4CAzpUOpPLOCAXsPNeyi",
+    "data/data_map/locais_criticos_2018.csv": "1iF7z5XdT9z87KyBBjgWFgMCJme5Wxy_Y",
+    "data/data_map/locais_criticos_2022.csv": "1Wgplr9uaoWvnTu0hOAuQHOcYT_a4NxqL",
+    "data/data_map/locais_criticos_2026.csv": "1TOG8kCKn6wWDSStmy7Yy5pIKDUEt5qKr",
+    "data/data_map/locais_votacao_consolidado_sc_2018.csv": "1UWOp94666A6Em0nmIVE8friHIt5a7TVs",
+    "data/data_map/locais_votacao_consolidado_sc_2022.csv": "1Ct58xa2usohCRJT915tRYhS5ShyyKwM0",
+    "data/data_map/locais_votacao_consolidado_sc_2026.csv": "1XV924an6Q4O-Wt4EYpTwzLGTa_FgGm-9",
+    "data/data_map/df_locais_somente_criticos_2018.csv": "1VF39OJon8xW0O5sQlbbNUPN4Iezpw6In",
+    "data/data_map/df_locais_somente_criticos_2022.csv": "1X6MND3vNeyEWxdqcCW_HjYSPRWjjotwx",
+    "data/data_map/df_locais_com_atraso_2018.csv": "1Gclxcm5tQWypMBvwZvvs-8QvGziUXB4U",
+    "data/data_map/df_locais_com_atraso_2022.csv": "19n5Q8zhjvyTHSZM0Y2cZ6t-pvrXZNuIR",
+    "data/data_map/df_locais_votacao_consolidado_somente_criticos_2018.csv": "1b1injUtqPhX2_wlKXer_RpBrydY2guP-",
+    "data/data_map/df_locais_votacao_consolidado_somente_criticos_2022.csv": "1B1-g9b_Dr5adrL-9_JndmPKLUroHuCHu",
+    "data/data_map/df_locais_votacao_consolidado_com_atraso_2018.csv": "1BNGFKgNIRI5w9Vxb9BU2-3bShKX3n3We",
+    "data/data_map/df_locais_votacao_consolidado_com_atraso_2022.csv": "1Alj1AInoY021eUgthx1_z2rYiO21OmWj",
+}
+
+
+def _config_paths(cfg: dict):
+    yield from cfg["niveis"].values()
+    yield from cfg["modelos_urnas"].values()
+    yield cfg["contingencia"]
+
+
+# Falha no import (e não no meio de uma sessão) se algum caminho de DATA_CONFIG não tiver ID.
 _DRIVE_FILES: dict[str, str] = {
-    # output/nivel_criticidade — CSVs (pipeline novo renomeou para
-    # urnas_status_X / urnas_com_atraso / urnas_criticas, mas os caminhos
-    # locais/chaves deste dict foram mantidos como estavam)
-    "data/output/nivel_criticidade/2022/por_status/urnas_criticas_2022_1t.csv":       "1gMB8nvzSF5urD8eAyuAKOHJR7OWIpRKQ",  
-    "data/output/nivel_criticidade/2018/por_status/urnas_criticas_2018_1t.csv":       "1VCGapqyYaUj9Wygzvj_LxnbLbJz0r6yK",  
-    "data/output/nivel_criticidade/2022/por_status/urnas_com_atraso_2022_1t.csv":     "11BxyMBhkOnMj5iEsupd9DXfoLSA_TJoU", 
-    "data/output/nivel_criticidade/2018/por_status/urnas_com_atraso_2018_1t.csv":     "1VCv8Wu_TvvTa-BnGBj716QT0WPg2Fy9v",  
-    "data/output/nivel_criticidade/2022/por_status/urnas_status_0_2022_1t.csv":       "1lXuCD9A0oGRWU57-CtMyna52d2heG7MT", 
-    "data/output/nivel_criticidade/2018/por_status/urnas_status_0_2018_1t.csv":       "1e29Cvd5ADzAWpjIgxK-pJglLze2fBzyi",  
-    "data/output/nivel_criticidade/2022/por_status/urnas_status_1_2022_1t.csv":       "1yL9GCYtj1-ammAxYpuHogI1QYkhoR9DS",  
-    "data/output/nivel_criticidade/2018/por_status/urnas_status_1_2018_1t.csv":       "1fq4VHGpbiwYgkXBwobjRSrO7me34jP44", 
-    "data/output/nivel_criticidade/2022/por_status/urnas_status_2_2022_1t.csv":       "1cy1jYFVXNL0DdZQiheT_25xsuFCRbL_7",  
-    "data/output/nivel_criticidade/2018/por_status/urnas_status_2_2018_1t.csv":       "1DmBIUZxQwSNYSwFGVNCxxuYdRU3wMQv9",  
-    "data/output/nivel_criticidade/2022/por_status/urnas_status_3_2022_1t.csv":       "1dPA13u1ISXC8QQntzNl_mS5QOTlZKS5G",  
-    "data/output/nivel_criticidade/2018/por_status/urnas_status_3_2018_1t.csv":       "1H8OIYLvIfJi6UfgeRgWxjusby13ul-nG", 
-    "data/output/nivel_criticidade/2022/por_status/urnas_status_4_2022_1t.csv":       "1WqsoBmMOd1a4BGi9SokSrCyacviYmp1y",  
-    "data/output/nivel_criticidade/2018/por_status/urnas_status_4_2018_1t.csv":       "13Xn_9naHkAah4o62vic3NF__5gYm6d3g",  
-
-    # output/modelos_urnas — ZIPs
-    "data/output/modelos_urnas/df_somente_criticas_2022.zip":     "19fYbaDtpftYMiBIxvHd8i8UFE9JJO-dk",
-    "data/output/modelos_urnas/df_somente_criticas_2018.zip":     "1G3_C7sUK0CK3GBCw0cMBi9z_1hqn4Fpz",
-    "data/output/modelos_urnas/df_com_atraso_2022.zip":           "1vTZlE8PdNkRorflEUXGcVBgCKS0JgrfY",
-    "data/output/modelos_urnas/df_com_atraso_2018.zip":           "10qwXJEpzKmGApKXakAcj6TUh3haMQcyf",
-    "data/output/modelos_urnas/df_completas_n0_2022.zip":         "1z4DEM-S7LEdFsKjplyMlFZy_lvv_hZEn",
-    "data/output/modelos_urnas/df_completas_n0_2018.zip":         "1E6FD2Ns-x7XvMWW1tSXUvrWw-a5OxSi4",
-    "data/output/modelos_urnas/df_completas_n1_2022.zip":         "15EOdRR4U7R8S6hUYzoOXXDWEryDR3U-G",
-    "data/output/modelos_urnas/df_completas_n1_2018.zip":         "1YYjjodQJia4BNXNC-7SZzu4nLv5Z2VZ3",
-    "data/output/modelos_urnas/df_completas_n2_2022.zip":         "1izQlOgQVErdxeycvwwTiyc5zUCbnWG6p",
-    "data/output/modelos_urnas/df_completas_n2_2018.zip":         "1TjaB0zqdasfYdHLSUnkO2pIsqqdBiVs_",
-    "data/output/modelos_urnas/df_completas_n3_2022.zip":         "1NDhbyzKwbM_7Ifw-buldnfslNksPdGGt",
-    "data/output/modelos_urnas/df_completas_n3_2018.zip":         "1RPUzwtuYyLg2tDGF_2Y9oIrh2cJMtR-q",
-    "data/output/modelos_urnas/df_completas_n4_2022.zip":         "11UX8SkPam27RPfR4LVTXkFUADwCDNgwu",
-    "data/output/modelos_urnas/df_completas_n4_2018.zip":         "1735yCJ3xnuV_q9wVm6-8h0IaBtCBnYxn",
-
-    # data_map — CSVs geográficos (mesmos nomes de arquivo, só IDs novos)
-    "data/data_map/locais_criticos_2022.csv":                                       "1Wgplr9uaoWvnTu0hOAuQHOcYT_a4NxqL",
-    "data/data_map/locais_criticos_2018.csv":                                       "1iF7z5XdT9z87KyBBjgWFgMCJme5Wxy_Y",
-    "data/data_map/df_locais_somente_criticos_2022.csv":                            "1X6MND3vNeyEWxdqcCW_HjYSPRWjjotwx",
-    "data/data_map/df_locais_somente_criticos_2018.csv":                            "1VF39OJon8xW0O5sQlbbNUPN4Iezpw6In",
-    "data/data_map/df_locais_com_atraso_2022.csv":                                  "19n5Q8zhjvyTHSZM0Y2cZ6t-pvrXZNuIR",
-    "data/data_map/df_locais_com_atraso_2018.csv":                                  "1Gclxcm5tQWypMBvwZvvs-8QvGziUXB4U",
-    "data/data_map/locais_votacao_consolidado_sc_2022.csv":                         "1Ct58xa2usohCRJT915tRYhS5ShyyKwM0",
-    "data/data_map/locais_votacao_consolidado_sc_2018.csv":                         "1UWOp94666A6Em0nmIVE8friHIt5a7TVs",
-    "data/data_map/df_locais_votacao_consolidado_somente_criticos_2022.csv":        "1B1-g9b_Dr5adrL-9_JndmPKLUroHuCHu",
-    "data/data_map/df_locais_votacao_consolidado_somente_criticos_2018.csv":        "1b1injUtqPhX2_wlKXer_RpBrydY2guP-",
-    "data/data_map/df_locais_votacao_consolidado_com_atraso_2022.csv":              "1Alj1AInoY021eUgthx1_z2rYiO21OmWj",
-    "data/data_map/df_locais_votacao_consolidado_com_atraso_2018.csv":              "1BNGFKgNIRI5w9Vxb9BU2-3bShKX3n3We",
-
-    # datasets auxiliares
-    "data/datasets/Tabela_Configuracoes.csv":                                       "1uOjGX6_R1_K-4CAzpUOpPLOCAXsPNeyi",
-    "data/output/nivel_criticidade/2022/por_status/urnas_contingencia_2022.csv":    "1Eoo8gDDCbL514tY32Dm1vhDYzFgJFfHF",
-    "data/output/nivel_criticidade/2018/por_status/urnas_contingencia_2018.csv":    "1g7IPdIXWSHxOns3mJlclXWFBTT5QqxVh",
+    **{
+        p: _DRIVE_IDS[ano][os.path.basename(p)]
+        for ano, cfg in DATA_CONFIG.items()
+        for p in _config_paths(cfg)
+    },
+    **_EXTRA_FILES,
 }
 
 
