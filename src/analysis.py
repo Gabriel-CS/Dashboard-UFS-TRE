@@ -25,7 +25,7 @@ STATUS_OPCOES: dict[str, str | int] = {
 # Constantes compartilhadas
 # ──────────────────────────────────────────────────────────────────────────────
 
-URN_MODELS: list[str] = ["UE2009", "UE2010", "UE2011", "UE2013", "UE2015", "UE2020", "2026"]
+URN_MODELS: list[str] = ["UE2009", "UE2010", "UE2011", "UE2013", "UE2015", "UE2020", "UE2026"]
 
 OKABE_ITO: list[str] = [
     "#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#5501F0"
