@@ -1,822 +1,81 @@
 import gc
 import os
-import time
-
-import gdown
-import pandas as pd
 import streamlit as st
-
 from src.analysis import (
-    FILTER_COM_ATRASO,
     FILTER_CONTINGENCIA,
     FILTER_SOMENTE_CRITICAS,
-    STATUS_DETALHES,
     STATUS_OPCOES,
     UrnasCriticasAnalysis,
+)
+from src.data_source import (
+    DATA_CONFIG,
+    baixar_dados_ausentes,
+    count_rows,
+    load_csv,
+    load_estado_means,
+    nivel_key,
 )
 from src.tab_criticidade import render_tab_criticidade
 from src.tab_geo import render_tab_geo
 from src.tab_modelo import render_tab_modelo
+from src.tab_sobre import render_tab_sobre
+from src.theme import aplicar_tema
+from src.ui_components import app_header, fmt_int
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CONFIGURAÇÃO DE DADOS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _nivel_key(status_filter):
-    return FILTER_SOMENTE_CRITICAS if status_filter is None else status_filter
-
-
-_ANOS = ("2018", "2022", "2026")
-
-_NIVEIS_TPL = {
-    FILTER_SOMENTE_CRITICAS: "urnas_criticas_{a}_1t.csv",
-    FILTER_COM_ATRASO:       "urnas_com_atraso_{a}_1t.csv",
-    **{n: f"urnas_status_{n}_{{a}}_1t.csv" for n in range(5)},
-}
-_MODELOS_TPL = {
-    FILTER_SOMENTE_CRITICAS: "df_somente_criticas_{a}.zip",
-    FILTER_COM_ATRASO:       "df_com_atraso_{a}.zip",
-    **{n: f"df_completas_n{n}_{{a}}.zip" for n in range(5)},
-}
-
-
-def _build_config(ano: str) -> dict:
-    p = lambda grupo, tpl: f"data/output/{ano}/{grupo}/{tpl.format(a=ano)}"
-    return {
-        "niveis":        {k: p("por_status", t) for k, t in _NIVEIS_TPL.items()},
-        "modelos_urnas": {k: p("modelos_urnas", t) for k, t in _MODELOS_TPL.items()},
-        "contingencia":  p("por_status", "urnas_contingencia_{a}.csv"),
-    }
-
-
-DATA_CONFIG = {a: _build_config(a) for a in _ANOS}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CONFIGURAÇÃO DA PÁGINA
-# ═══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="UFS-TRE | Análise de Urnas Eletrônicas",
-    page_icon=":round_pushpin:",
+    page_title="Urnas eletrônicas em Sergipe | UFS · TRE-SE",
+    page_icon=":material/how_to_vote:",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# DESIGN SYSTEM — tokens centralizados, usados em todos os módulos via CSS vars
-# ═══════════════════════════════════════════════════════════════════════════════
-st.markdown("""
-    <style>
-        /* ── Tokens globais ────────────────────────────────────────────── */
-        :root {
-            --color-brand:       #0072B2;
-            --color-brand-light: #56B4E9;
-            --color-ink:         #0f172a;
-            --color-ink-mid:     #334155;
-            --color-ink-soft:    #64748b;
-            --color-ink-muted:   #94a3b8;
-            --color-surface:     #ffffff;
-            --color-surface-2:   #f8fafc;
-            --color-border:      #e2e8f0;
-            --color-danger:      #dc2626;
-            --color-success:     #059669;
-            --color-warning:     #d97706;
-            --radius-card:       12px;
-            --radius-sm:         8px;
-            --shadow-card:       0 1px 4px rgba(15,23,42,0.05), 0 4px 16px rgba(15,23,42,0.04);
-            --shadow-hover:      0 8px 24px rgba(15,23,42,0.10);
-            --font-sans:         'Inter', 'Segoe UI', sans-serif;
-            --font-mono:         'SF Mono', 'Fira Code', Monaco, monospace;
-        }
+aplicar_tema()
 
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-        html, body, [class*="css"] { font-family: var(--font-sans); }
+# ── Cabeçalho (preenchido depois do carregamento) e filtros globais ─────────
+slot_cabecalho = st.container()
 
-        /* ── Header principal ─────────────────────────────────────────── */
-        .main-header {
-            font-weight: 800;
-            color: var(--color-ink);
-            letter-spacing: -0.03em;
-            margin-bottom: 0.15rem;
-            font-size: 2.1rem;
-            line-height: 1.2;
-        }
-        .sub-header {
-            color: var(--color-ink-soft);
-            font-size: 0.9rem;
-            margin-top: 0;
-            margin-bottom: 1.25rem;
-            font-weight: 400;
-            letter-spacing: 0.01em;
-        }
+with st.container(key="filtros_globais"):
+    col_ano, col_nivel = st.columns([1, 2], gap="large")
+    with col_ano:
+        anos = sorted(DATA_CONFIG)
+        ano = st.radio("Eleição", anos, index=len(anos) - 1, horizontal=True)
+    with col_nivel:
+        status_label = st.selectbox("Nível de atraso", list(STATUS_OPCOES))
+    status_filter = STATUS_OPCOES[status_label]
 
-        /* ── KPI cards ────────────────────────────────────────────────── */
-        .kpi-box {
-            background: var(--color-surface);
-            border: 1px solid var(--color-border);
-            border-radius: var(--radius-card);
-            padding: 2.1rem 1rem;
-            text-align: center;
-            box-shadow: var(--shadow-card);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-            height: 100%;
-            position: relative;
-            cursor: pointer;
-            outline: none;
-        }
-        .kpi-box::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 3px;
-            background: linear-gradient(90deg, var(--color-brand), var(--color-brand-light));
-            border-radius: var(--radius-card) var(--radius-card) 0 0;
-        }
-        .kpi-box:hover, .kpi-box:focus {
-            transform: translateY(-3px);
-            box-shadow: var(--shadow-hover);
-        }
-        .kpi-label {
-            font-size: 0.65rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            color: var(--color-ink-muted);
-            margin-bottom: 0.5rem;
-        }
-        .kpi-value   { font-size: 1.65rem; font-weight: 800; color: var(--color-ink); line-height: 1.15; }
-        .kpi-accent  { color: var(--color-brand); }
-        .kpi-danger  { color: var(--color-danger); }
-        .kpi-success { color: var(--color-success); }
-
-        /* ── Tooltips ─────────────────────────────────────────────────── */
-        .kpi-tooltip {
-            visibility: hidden;
-            width: max-content;
-            max-width: 250px;
-            background-color: var(--color-ink);
-            color: #f8fafc;
-            text-align: center;
-            border-radius: var(--radius-sm);
-            padding: 10px 14px;
-            position: absolute;
-            z-index: 99;
-            top: 115%;
-            left: 50%;
-            transform: translateX(-50%);
-            opacity: 0;
-            transition: opacity 0.2s ease, top 0.2s ease;
-            font-size: 0.75rem;
-            font-weight: 500;
-            line-height: 1.4;
-            box-shadow: 0 10px 25px rgba(15,23,42,0.2);
-            pointer-events: none;
-            white-space: normal;
-        }
-        .kpi-tooltip::after {
-            content: "";
-            position: absolute;
-            bottom: 100%;
-            left: 50%;
-            margin-left: -6px;
-            border-width: 6px;
-            border-style: solid;
-            border-color: transparent transparent var(--color-ink) transparent;
-        }
-        .kpi-box:hover .kpi-tooltip,
-        .kpi-box:focus .kpi-tooltip {
-            visibility: visible;
-            opacity: 1;
-            top: 105%;
-        }
-
-        /* ── Seções ───────────────────────────────────────────────────── */
-        .section-header {
-            border-left: 4px solid var(--color-brand);
-            padding-left: 12px;
-            margin: 1.75rem 0 0.6rem 0;
-        }
-        .section-header h2 {
-            margin: 0;
-            font-size: 1.05rem;
-            font-weight: 700;
-            color: var(--color-ink);
-            letter-spacing: -0.01em;
-        }
-        .section-desc {
-            font-size: 0.82rem;
-            color: var(--color-ink-soft);
-            margin-bottom: 1rem;
-            padding-left: 16px;
-            line-height: 1.5;
-        }
-
-        /* ── Resumo cards ─────────────────────────────────────────────── */
-        .resumo-card {
-            border: 1px solid #f1f5f9;
-            border-radius: 10px;
-            padding: 8px 14px;
-            margin-bottom: 6px;
-            background: var(--color-surface-2);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            transition: background 0.15s, border-color 0.15s;
-        }
-        .resumo-card:hover       { background: #f0f9ff; border-color: #bae6fd; }
-        .resumo-dot              { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-        .resumo-nome             { font-size: 0.8rem; font-weight: 600; color: var(--color-ink); }
-        .resumo-metrica-valor    { font-size: 0.82rem; font-weight: 700; color: var(--color-ink-mid); font-family: var(--font-mono); }
-        .resumo-metrica-label    { font-size: 0.6rem; color: var(--color-ink-muted); text-transform: uppercase; letter-spacing: 0.3px; }
-
-        /* ── Alertas ──────────────────────────────────────────────────── */
-        .alert-box     { padding: 1rem 1.25rem; border-radius: 10px; border-left: 4px solid; margin-bottom: 1rem; }
-        .alert-danger  { background: #fef2f2; border-color: var(--color-danger); color: #991b1b; }
-        .alert-success { background: #f0fdf4; border-color: #16a34a; color: #15803d; }
-        .alert-warning { background: #fffbeb; border-color: var(--color-warning); color: #92400e; }
-
-        /* ── Status badges ────────────────────────────────────────────── */
-        .status-badge { display: inline-block; padding: 0.2rem 0.65rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
-        .status-0 { background: #e0f2fe; color: #0369a1; }
-        .status-1 { background: #dcfce7; color: #15803d; }
-        .status-2 { background: #fef9c3; color: #a16207; }
-        .status-3 { background: #fee2e2; color: #991b1b; }
-        .status-4 { background: #fee2e2; color: #B91C1C; }
-
-        /* ── Mapa ─────────────────────────────────────────────────────── */
-        .folium-map { border-radius: var(--radius-card); overflow: hidden; box-shadow: 0 4px 20px rgba(15,23,42,0.10); border: 1px solid var(--color-border); }
-
-        /* ── Painel lateral adaptativo ───────────────────────────────── */
-        .side-panel {
-            background: var(--color-surface);
-            border: 1px solid var(--color-border);
-            border-radius: var(--radius-card);
-            padding: 0;
-            overflow: hidden;
-            box-shadow: var(--shadow-card);
-            height: 100%;
-        }
-        .side-panel-header {
-            padding: 14px 16px 12px;
-            border-bottom: 1px solid var(--color-border);
-            background: var(--color-surface-2);
-        }
-        .side-panel-body {
-            padding: 14px 16px;
-        }
-
-        /* ── Footer ───────────────────────────────────────────────────── */
-        .footer {
-            margin-top: 3rem;
-            padding-top: 1.5rem;
-            border-top: 1px solid #f1f5f9;
-            text-align: center;
-            color: var(--color-ink-muted);
-            font-size: 0.78rem;
-        }
-
-        /* ── Tabs ─────────────────────────────────────────────────────── */
-        .stTabs [data-baseweb="tab-list"] { gap: 6px; }
-        .stTabs [data-baseweb="tab"] {
-            padding: 9px 22px;
-            font-weight: 600;
-            font-size: 0.85rem;
-            border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-            color: var(--color-ink-soft);
-            letter-spacing: 0.01em;
-        }
-        .stTabs [aria-selected="true"] {
-            background: var(--color-ink) !important;
-            color: white !important;
-        }
-
-        /* ── Streamlit overrides ──────────────────────────────────────── */
-        .stSelectbox label, .stMultiSelect label {
-            font-family: var(--font-sans) !important;
-            font-size: 0.7rem !important;
-            font-weight: 700 !important;
-            text-transform: uppercase !important;
-            letter-spacing: 0.08em !important;
-            color: var(--color-ink-soft) !important;
-            margin-bottom: 0.25rem !important;
-        }
-        .stSelectbox > div[data-baseweb="select"],
-        .stMultiSelect > div[data-baseweb="select"] {
-            border-radius: 10px !important;
-            border: 1px solid var(--color-border) !important;
-            box-shadow: 0 1px 3px rgba(15,23,42,0.04) !important;
-            font-family: var(--font-sans) !important;
-            font-size: 0.82rem !important;
-            color: var(--color-ink) !important;
-            min-height: 38px !important;
-        }
-        .stSelectbox > div[data-baseweb="select"]:hover,
-        .stMultiSelect > div[data-baseweb="select"]:hover {
-            border-color: var(--color-brand) !important;
-            box-shadow: 0 2px 8px rgba(0,114,178,0.08) !important;
-        }
-
-        /* ── Checkbox estilizado (filtro de contingência) ─────────────── */
-        .stCheckbox > label {
-            font-family: var(--font-sans) !important;
-            font-size: 0.85rem !important;
-            font-weight: 600 !important;
-            color: var(--color-ink-mid) !important;
-        }
-        .stCheckbox > label:hover {
-            color: var(--color-brand) !important;
-        }
-
-        /* ── Métricas em linha ────────────────────────────────────────── */
-        .metric-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-bottom: 1.5rem;
-        }
-        .metric-row > div {
-            transition: transform 0.15s ease, box-shadow 0.15s ease;
-        }
-        .metric-row > div:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(15,23,42,0.08);
-        }
-
-        /* ── Scrollbar customizada ────────────────────────────────────── */
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: #f1f5f9; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-
-        /* ── Reduzir espaçamento entre seções ─────────────────────────── */
-        .element-container { margin-bottom: 0.3rem !important; }
-
-        /* ── Moldura dos gráficos — dá destaque visual a todo st.plotly_chart ── */
-        .stPlotlyChart,
-        div[data-testid="stPlotlyChart"] {
-            background: var(--color-surface) !important;
-            border: 1px solid var(--color-border) !important;
-            border-radius: var(--radius-card) !important;
-            box-shadow: var(--shadow-card) !important;
-            padding: 0.85rem 0.85rem 0.35rem !important;
-            margin-bottom: 1rem !important;
-            transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
-        }
-        .stPlotlyChart:hover,
-        div[data-testid="stPlotlyChart"]:hover {
-            box-shadow: var(--shadow-hover) !important;
-            border-color: #cbd5e1 !important;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CACHE DE DADOS
-# ═══════════════════════════════════════════════════════════════════════════════
-# ── IDs do Google Drive: nome do arquivo → file_id, por ano ────────────────────
-# O caminho local NÃO é repetido aqui: sai de DATA_CONFIG (fonte única).
-_DRIVE_IDS: dict[str, dict[str, str]] = {
-    "2018": {
-        "urnas_criticas_2018_1t.csv":   "1BA9-Or_bpb1LyF9aEqMaZ6r0pLbRlhm7",
-        "urnas_com_atraso_2018_1t.csv": "1vOz3M5yOuXpgfwi49PiI_5LO7DdGQxws",
-        "urnas_status_0_2018_1t.csv":   "1K6KuMoKG9-1z2ndzwebpYILoPEW5ClG8",
-        "urnas_status_1_2018_1t.csv":   "1R5rsrCY5WO2dbNytjEaLCvYOLZUXhN6f",
-        "urnas_status_2_2018_1t.csv":   "1D70Qr5ACoVo-Wmo_MbRStv7iCASTjshd",
-        "urnas_status_3_2018_1t.csv":   "1usp4G9yY1R3uIfZ5tbiH3IO90QA03LQ2",
-        "urnas_status_4_2018_1t.csv":   "1DbTNQjYFHEVjIcCQP0anDswDtLhAgTZH",
-        "urnas_contingencia_2018.csv":  "1Cjlujls9MuJFoqbZ36NYrxoyoB7nAa_R",
-        "df_somente_criticas_2018.zip": "1pJH33pfId2DOSKPAR6Psvf7NFIa_Pu9t",
-        "df_com_atraso_2018.zip":       "1sTPFowwBcnZ6mZeIS1NRufriCblwRxlk",
-        "df_completas_n0_2018.zip":     "1Wy8X1lcDwYBLLNArd2NaomRCJiMa-BGJ",
-        "df_completas_n1_2018.zip":     "1cptbA6bQQhhiQfLLRwN0f0kL9dIjaAx0",
-        "df_completas_n2_2018.zip":     "1qdkUrv2gAsl6anICVsuUj6dpXLLGYLye",
-        "df_completas_n3_2018.zip":     "1A5_4O_Lv3VXrcvxrLqTUxu0AhJwtUIAT",
-        "df_completas_n4_2018.zip":     "1kFg3mBXgLfJizfnAr1fKaU0sfgy9n4pS",
-    },
-    "2022": {
-        "urnas_criticas_2022_1t.csv":   "1Jj6wloqWoT1Kmvvqy5IVr5etl3W07Zix",
-        "urnas_com_atraso_2022_1t.csv": "1fcUiEMZjsY6sT5Xb_OUEUX1yUS26JmdT",
-        "urnas_status_0_2022_1t.csv":   "1fdZ3-aldWOaYquEDByeETRzncddK6YFv",
-        "urnas_status_1_2022_1t.csv":   "1M5qi99ozcIiH-b6dYEY8aW0QFSNXZL_G",
-        "urnas_status_2_2022_1t.csv":   "1g3PB6_w3IcSO5d-NBWsvHwmwcFP4hT5l",
-        "urnas_status_3_2022_1t.csv":   "1gfrMr0NRWujToXc1n9_EqJscgPjuuyNT",
-        "urnas_status_4_2022_1t.csv":   "1AvFF0tV0Ews5WFMijn6ECZ8af-iaSSJV",
-        "urnas_contingencia_2022.csv":  "1zKfiVOtn-CKdPp1Yq_S8w34oeGyDIKTC",
-        "df_somente_criticas_2022.zip": "1LRMPFX5dXX80Bwfq5Tfv_ohcVYi-4Y6r",
-        "df_com_atraso_2022.zip":       "1kn3a9JpHcQwq31V0L6ja-iesh_qXmOOb",
-        "df_completas_n0_2022.zip":     "1zaos2fFT2znQ_Jx8YWQBQDaEpWlua1bU",
-        "df_completas_n1_2022.zip":     "1Uqf64CWc_C1ztNMYMu615UMKokTa3__I",
-        "df_completas_n2_2022.zip":     "156RJ6iHyDPMloWY1ksQOLNUct8v307LO",
-        "df_completas_n3_2022.zip":     "1z7GyYvf_3FZXjrwIT8O8Mnn0YWxeL-q9",
-        "df_completas_n4_2022.zip":     "1ze4KpuChipazFTC0YvqHRfnXqbVLNa5I",
-    },
-    "2026": {
-        "urnas_criticas_2026_1t.csv":   "1_qkrn5Y_pMmRF271dbYwUvJ2Jct4AOF-",
-        "urnas_com_atraso_2026_1t.csv": "14uQjx9HCJK_IpOBhkPEVVfz8uP_aWAPC",
-        "urnas_status_0_2026_1t.csv":   "1fNRQmBmS8XraSjh4UymcUQcWdCuo0uJe",
-        "urnas_status_1_2026_1t.csv":   "1ZPNSgjDbCydZEl-3Tpt4FVo_KXdBm15b",
-        "urnas_status_2_2026_1t.csv":   "1mFVIbTROo4ibttwIQkThkSY6XK1zqXqT",
-        "urnas_status_3_2026_1t.csv":   "1GoPRNtBcBj5YdpM-t5dBCwOmaTf0SX_a",
-        "urnas_status_4_2026_1t.csv":   "1_NE5Wa_CPCtY2XqQSvqDGSn8FjUcTHck",
-        "urnas_contingencia_2026.csv":  "1JsHXMU-ckQKU3nIecUKMRUcBhMpus-1w",
-        "df_somente_criticas_2026.zip": "1owUx9Qgwc5PRx7kb9NYR1JqviOOvf82M",
-        "df_com_atraso_2026.zip":       "1EmtWGhIlCLVoXb84y2p4dfSXGSCjky-x",
-        "df_completas_n0_2026.zip":     "1hYBkn58zL1_ti1WwF-v8JbY09iQ3j6Xb",
-        "df_completas_n1_2026.zip":     "1PdIx-aoYSMzzo57Fc-3N5u6lBAeM3hzV",
-        "df_completas_n2_2026.zip":     "1vmA71Bxj4b2uZj_r_kiPfVYT6hGKOmuf",
-        "df_completas_n3_2026.zip":     "1QRG8Jqi5yjROd-o3pXLnyH0UR_rg-Lox",
-        "df_completas_n4_2026.zip":     "1yDlLD5i863pEkg9yNrtnwoiIG-txmTS3",
-    },
-}
-
-# Arquivos fora de DATA_CONFIG (consumidos por src/tab_geo e afins): caminho local → file_id
-_EXTRA_FILES: dict[str, str] = {
-    "data/datasets/Tabela_Configuracoes.csv": "1uOjGX6_R1_K-4CAzpUOpPLOCAXsPNeyi",
-    "data/data_map/locais_criticos_2018.csv": "1iF7z5XdT9z87KyBBjgWFgMCJme5Wxy_Y",
-    "data/data_map/locais_criticos_2022.csv": "1Wgplr9uaoWvnTu0hOAuQHOcYT_a4NxqL",
-    "data/data_map/locais_criticos_2026.csv": "1TOG8kCKn6wWDSStmy7Yy5pIKDUEt5qKr",
-    "data/data_map/locais_votacao_consolidado_sc_2018.csv": "1UWOp94666A6Em0nmIVE8friHIt5a7TVs",
-    "data/data_map/locais_votacao_consolidado_sc_2022.csv": "1Ct58xa2usohCRJT915tRYhS5ShyyKwM0",
-    "data/data_map/locais_votacao_consolidado_sc_2026.csv": "1XV924an6Q4O-Wt4EYpTwzLGTa_FgGm-9",
-    "data/data_map/df_locais_somente_criticos_2018.csv": "1VF39OJon8xW0O5sQlbbNUPN4Iezpw6In",
-    "data/data_map/df_locais_somente_criticos_2022.csv": "1X6MND3vNeyEWxdqcCW_HjYSPRWjjotwx",
-    "data/data_map/df_locais_com_atraso_2018.csv": "1Gclxcm5tQWypMBvwZvvs-8QvGziUXB4U",
-    "data/data_map/df_locais_com_atraso_2022.csv": "19n5Q8zhjvyTHSZM0Y2cZ6t-pvrXZNuIR",
-    "data/data_map/df_locais_votacao_consolidado_somente_criticos_2018.csv": "1b1injUtqPhX2_wlKXer_RpBrydY2guP-",
-    "data/data_map/df_locais_votacao_consolidado_somente_criticos_2022.csv": "1B1-g9b_Dr5adrL-9_JndmPKLUroHuCHu",
-    "data/data_map/df_locais_votacao_consolidado_com_atraso_2018.csv": "1BNGFKgNIRI5w9Vxb9BU2-3bShKX3n3We",
-    "data/data_map/df_locais_votacao_consolidado_com_atraso_2022.csv": "1Alj1AInoY021eUgthx1_z2rYiO21OmWj",
-}
-
-
-def _config_paths(cfg: dict):
-    yield from cfg["niveis"].values()
-    yield from cfg["modelos_urnas"].values()
-    yield cfg["contingencia"]
-
-
-# Falha no import (e não no meio de uma sessão) se algum caminho de DATA_CONFIG não tiver ID.
-_DRIVE_FILES: dict[str, str] = {
-    **{
-        p: _DRIVE_IDS[ano][os.path.basename(p)]
-        for ano, cfg in DATA_CONFIG.items()
-        for p in _config_paths(cfg)
-    },
-    **_EXTRA_FILES,
-}
-
-
-def _is_valid_download(local_path: str) -> bool:
-    """
-    Confirma que o arquivo baixado é real e não uma página de erro/aviso do
-    Drive (quota excedida, permissão negada, tela de vírus não reconhecida
-    etc.) salva por engano com extensão .csv/.zip. Verifica tamanho mínimo e,
-    para não-zip, que o conteúdo não começa com marcação HTML.
-    """
-    if not os.path.exists(local_path) or os.path.getsize(local_path) == 0:
-        return False
-    if local_path.endswith(".zip"):
-        import zipfile
-        return zipfile.is_zipfile(local_path)
-    with open(local_path, "rb") as f:
-        head = f.read(512).lstrip().lower()
-    return not head.startswith(b"<!doctype") and not head.startswith(b"<html")
-
-
-def _download_file(local_path: str, file_id: str) -> None:
-    """
-    Baixa um único arquivo do Google Drive via gdown, que já lida
-    corretamente com a tela de confirmação de vírus/tamanho do Drive
-    (diferentes formatos, incluindo os mais recentes baseados em cookie),
-    ao contrário de um scraping manual com regex fixo.
-    """
-    if os.path.exists(local_path) and _is_valid_download(local_path):
-        return
-
-    # Se existir um arquivo inválido (ex.: HTML de erro salvo em tentativa
-    # anterior), remove antes de tentar de novo.
-    if os.path.exists(local_path):
-        os.remove(local_path)
-
-    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-
-    ultima_excecao: Exception | None = None
-    for tentativa in range(1, 4):  # até 3 tentativas — cobre falhas transitórias/rate limit
-        try:
-            try:
-                gdown.download(id=file_id, output=local_path, quiet=True, fuzzy=True)
-            except TypeError:
-                # Versões mais antigas do gdown (<4.6) não têm o parâmetro
-                # 'fuzzy'. 'fuzzy' só é necessário quando se passa uma URL
-                # completa do Drive; como aqui já usamos 'id' diretamente,
-                # é seguro cair para a chamada sem esse argumento.
-                gdown.download(id=file_id, output=local_path, quiet=True)
-            if _is_valid_download(local_path):
-                return
-            raise RuntimeError(
-                "conteúdo baixado não parece ser o arquivo esperado "
-                "(possível página de erro/quota do Google Drive)"
-            )
-        except Exception as exc:  # noqa: BLE001 — queremos tentar de novo e reportar no fim
-            ultima_excecao = exc
-            if os.path.exists(local_path):
-                os.remove(local_path)
-            time.sleep(2 * tentativa)  # backoff simples entre tentativas
-
-    raise RuntimeError(f"falha após 3 tentativas ({ultima_excecao})") from ultima_excecao
-
-
-@st.cache_resource(show_spinner=False)
-def _download_and_extract_data() -> list[str]:
-    """
-    Baixa sob demanda apenas os arquivos ainda ausentes/inválidos.
-    Cada arquivo é baixado diretamente ao seu caminho final — sem zip global.
-
-    IMPORTANTE: esta função NUNCA chama st.stop() — funções decoradas com
-    @st.cache_resource devem sempre completar e *retornar* um valor. Parar a
-    execução no meio pode fazer o Streamlit tratar a chamada como concluída
-    sem cachear um resultado consistente, mascarando falhas em reruns
-    seguintes. Quem decide o que fazer com os erros é o chamador, fora do
-    cache.
-    """
-    arquivos_faltando = [
-        p for p in _DRIVE_FILES if not (os.path.exists(p) and _is_valid_download(p))
-    ]
-    if not arquivos_faltando:
-        return []
-
-    erros: list[str] = []
-    with st.spinner("Preparando o sistema pela primeira vez. Isso pode levar alguns instantes…"):
-        for local_path in arquivos_faltando:
-            file_id = _DRIVE_FILES[local_path]
-            nome    = os.path.basename(local_path)
-            try:
-                _download_file(local_path, file_id)
-            except Exception as exc:
-                erros.append(f"{nome}: {exc}")
-
-    return erros
-
-
-_erros_download = _download_and_extract_data()
-if _erros_download:
+# ── Carregamento ─────────────────────────────────────────────────────────────
+erros = baixar_dados_ausentes()
+if erros:
     st.error(
-        "Falha ao baixar os seguintes arquivos do Google Drive:\n\n"
-        + "\n".join(f"- {e}" for e in _erros_download)
-        + "\n\n**Verifique se cada arquivo (não apenas a pasta) está com "
-        "permissão 'Qualquer pessoa com o link → Visualizador' e se o "
-        "arquivo não excedeu a cota diária de downloads do Drive.**"
+        "Não foi possível baixar os dados do Google Drive:\n\n"
+        + "\n".join(f"- {e}" for e in erros)
+        + "\n\nConfira as permissões de compartilhamento e a cota de downloads."
     )
     st.stop()
 
-
-@st.cache_data(show_spinner=False, max_entries=2, ttl=300)
-def _load_csv_cached(path: str) -> pd.DataFrame:
-    try:
-        df = pd.read_csv(path, sep=",", encoding="utf-8")
-        if len(df.columns) <= 1:
-            raise ValueError("Possivelmente separador incorreto")
-    except Exception:
-        df = pd.read_csv(path, sep=";", encoding="utf-8")
-    df.columns = df.columns.str.strip()
-    return df
-
-
-@st.cache_data(show_spinner=False, max_entries=4, ttl=1800)
-def _count_rows(path: str) -> int:
-    """
-    Conta linhas de um CSV sem parsear o conteúdo — apenas itera bytes
-    contando newlines. Bem mais rápido e barato em memória do que
-    `pd.read_csv(usecols=[0])` para arquivos grandes (uso típico: 30 MB+).
-    """
-    try:
-        # encoding fallback — a maioria dos CSVs do projeto é UTF-8,
-        # mas alguns vêm com BOM ou Latin-1. Em caso de erro, recorre
-        # ao pandas (lento mas robusto).
-        with open(path, "rb") as f:
-            # -1 porque a última linha pode ou não ter newline;
-            # Somamos 1 se o arquivo não terminar em newline.
-            count = sum(buf.count(b"\n") for buf in iter(lambda: f.read(1024 * 1024), b""))
-        # Se o arquivo não termina em \n, há uma linha extra.
-        # Verifica o último byte de forma barata.
-        with open(path, "rb") as f:
-            try:
-                f.seek(-1, os.SEEK_END)
-                if f.read(1) != b"\n":
-                    count += 1
-            except OSError:
-                # Arquivo vazio ou muito pequeno — mantém count como está
-                pass
-        # Subtrai 1 do cabeçalho (primeira linha), garantindo >= 0.
-        return max(count - 1, 0)
-    except Exception:
-        # Fallback: método anterior (lê a 1ª coluna com pandas).
-        try:
-            df = pd.read_csv(path, sep=",", encoding="utf-8", usecols=[0])
-            return len(df)
-        except Exception:
-            return 0
-
-
-@st.cache_data(show_spinner=False, max_entries=2, ttl=600)
-def _load_estado_means(nivel_all_path: str) -> dict[str, float]:
-    cols = ["TIMEOUT_BIOMETRIA", "INATIVIDADE", "TECLA_INDEVIDA"]
-    try:
-        df = pd.read_csv(nivel_all_path, sep=";", encoding="utf-8", usecols=cols)
-        return {c: float(df[c].mean()) for c in cols}
-    except Exception:
-        return {}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# HEADER
-# ═══════════════════════════════════════════════════════════════════════════════
-col_title, col_info = st.columns([3, 1])
-with col_title:
-    st.markdown("""
-        <div class="main-header">UFS · TRE</div>
-        <div class="sub-header">Análise operacional, sociodemográfica e geoespacial das urnas eletrônicas</div>
-    """, unsafe_allow_html=True)
-with col_info:
-    st.markdown(f"""
-        <div style="text-align: right; color: var(--color-ink-muted); font-size: 0.85rem; margin-top: 0.5rem;">
-            <div style="font-weight: 600; color: var(--color-ink-mid);">Última atualização</div>
-            <div>{pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("<hr style='margin: 0.2rem 0 1.2rem 0; border: none; border-top: 1px solid var(--color-border);'>", unsafe_allow_html=True)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# LINHA MESTRA: FILTROS + KPIs GLOBAIS
-# ═══════════════════════════════════════════════════════════════════════════════
-col_filtros, k1, k2, k3, k4, k5 = st.columns([1.6, 1, 1, 1, 1, 1])
-
-with col_filtros:
-    anos_disponiveis = sorted(DATA_CONFIG.keys())
-    ano_selecionado = st.selectbox("Ano eleitoral", anos_disponiveis, index=len(anos_disponiveis) - 1)
-
-    if 'last_ano' not in st.session_state:
-        st.session_state['last_ano'] = ano_selecionado
-
-    if st.session_state['last_ano'] != ano_selecionado:
-        st.cache_data.clear()
-        st.session_state['last_ano'] = ano_selecionado
-        st.rerun()
-
-    col_sel, col_btn = st.columns([5, 1])
-    with col_sel:
-        status_label = st.selectbox("Status operacional", list(STATUS_OPCOES.keys()))
-        status_filter = STATUS_OPCOES[status_label]
-
-    with col_btn:
-        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-
-        _items_html = ""
-        for lvl, info in STATUS_DETALHES.items():
-            _items_html += (
-                f'<div style="display:flex;gap:9px;align-items:flex-start;margin-bottom:9px;">'
-                f'  <div style="flex-shrink:0;width:28px;height:28px;border-radius:50%;'
-                f'              background:{info["cor"]};color:white;font-size:14px;font-weight:800;'
-                f'              display:flex;align-items:center;justify-content:center;">{lvl}</div>'
-                f'  <div>'
-                f'    <div style="font-size:14px;font-weight:700;color:{info["cor"]};margin-bottom:3px;">{info["icon"]}&nbsp;{info["label"]}</div>'
-                f'    <div style="font-size:13px;color:#6b7280;line-height:1.4;">{info["desc"]}</div>'
-                f'    <div style="font-size:12px;color:#9ca3af;margin-top:3px;'
-                f'                font-family:\'SF Mono\',\'Fira Code\',monospace;letter-spacing:0.01em;">'
-                f'      {info["intervalo"]}</div>'
-                f'  </div>'
-                f'</div>'
-            )
-
-        st.iframe(f"""<!DOCTYPE html>
-        <html><head>
-        <style>
-          *{{margin:0;padding:0;box-sizing:border-box;font-family:'Inter',sans-serif;}}
-          body{{background:transparent;overflow:visible;}}
-          #btn{{
-            width:40px;height:40px;border-radius:50%;
-            background:#ffffff;color:#0f172a;
-            font-size:18px;font-weight:800;line-height:40px;
-            text-align:center;cursor:pointer;user-select:none;
-            box-shadow:0 2px 8px rgba(15,23,42,0.15);
-            transition:background .18s,box-shadow .18s;
-            display:inline-block;border:1.5px solid #e2e8f0;
-          }}
-          #btn:hover{{background:#f1f5f9;box-shadow:0 4px 14px rgba(15,23,42,0.12);}}
-        </style>
-        </head><body>
-        <div id="btn">?</div>
-        <script>
-          var btn = document.getElementById('btn');
-          var pDoc = window.parent.document;
-
-          var oldPanel = pDoc.getElementById('crit-panel-legend');
-          if(oldPanel) oldPanel.remove();
-
-          var panel = pDoc.createElement('div');
-          panel.id = 'crit-panel-legend';
-          panel.innerHTML = `
-            <div id="crit-title" style="font-size:12px;font-weight:700;text-transform:uppercase;
-              letter-spacing:.1em;color:#94a3b8;padding-bottom:8px;margin-bottom:10px;
-              border-bottom:1px solid #f1f5f9;font-family:Inter,sans-serif;">Níveis de Criticidade</div>
-            {_items_html}`;
-
-          Object.assign(panel.style, {{
-            position:'fixed', zIndex:'2147483647', background:'#fff', border:'1px solid #e2e8f0',
-            borderRadius:'12px', padding:'12px 18px 10px', width:'380px',
-            boxShadow:'0 12px 40px rgba(15,23,42,0.18)', fontFamily:'Inter,sans-serif',
-            opacity:'0', transform:'translateY(-8px)', transition:'opacity .28s ease, transform .28s ease',
-            pointerEvents:'none', display:'none'
-          }});
-
-          pDoc.body.appendChild(panel);
-
-          function showPanel() {{
-            var frame = window.frameElement;
-            var fr    = frame.getBoundingClientRect();
-            var br    = btn.getBoundingClientRect();
-
-            panel.style.display = 'block';
-            panel.style.left    = (fr.left + br.left + 50) + 'px';
-            panel.style.top     = (fr.top  + br.top - 75) + 'px';
-
-            panel.getBoundingClientRect();
-            panel.style.opacity       = '1';
-            panel.style.transform     = 'translateY(0)';
-            panel.style.pointerEvents = 'auto';
-          }}
-
-          function hidePanel() {{
-            panel.style.opacity       = '0';
-            panel.style.transform     = 'translateY(-8px)';
-            panel.style.pointerEvents = 'none';
-            setTimeout(function() {{ panel.style.display = 'none'; }}, 280);
-          }}
-
-          pDoc.addEventListener('mousedown', function(e) {{
-            if (panel.style.opacity === '1' && !panel.contains(e.target)) {{
-              hidePanel();
-            }}
-          }});
-
-          btn.addEventListener('click', function(e) {{
-            e.preventDefault();
-            e.stopPropagation();
-            if (panel.style.display === 'none' || panel.style.opacity === '0') {{
-              showPanel();
-            }} else {{
-              hidePanel();
-            }}
-          }});
-        </script>
-        </body></html>""", height=45)
-
-# ── Validação e Carregamento de Dados ─────────────────────────────────────────
-cfg = DATA_CONFIG[ano_selecionado]
+cfg = DATA_CONFIG[ano]
 
 if status_filter == FILTER_CONTINGENCIA:
-    # Dataset de contingência, particionado por ano eleitoral (mesma lógica dos demais filtros).
-    contingencia_path = cfg["contingencia"]
-    if not os.path.exists(contingencia_path):
-        st.error(f"Arquivo não encontrado (Contingência): `{contingencia_path}`")
+    nivel_path = modelo_path = cfg["contingencia"]
+else:
+    chave = nivel_key(status_filter)
+    nivel_path, modelo_path = cfg["niveis"][chave], cfg["modelos_urnas"][chave]
+
+for caminho in dict.fromkeys((nivel_path, modelo_path)):
+    if not os.path.exists(caminho):
+        st.error(f"Arquivo não encontrado: `{caminho}`")
         st.stop()
 
-    with st.spinner("Carregando dados..."):
-        df_secoes    = _load_csv_cached(contingencia_path)
-        df_voter_log = df_secoes.copy()
+n_all_path = cfg["niveis"][FILTER_SOMENTE_CRITICAS]
+n_0_path = cfg["niveis"][0]
 
-        n_all_path = cfg["niveis"][FILTER_SOMENTE_CRITICAS]
-        n_0_path   = cfg["niveis"][0]
-        count_criticas = _count_rows(n_all_path) if os.path.exists(n_all_path) else 0
-        count_n0       = _count_rows(n_0_path)   if os.path.exists(n_0_path)   else 0
-        total_secoes_global = count_criticas + count_n0
-
-        estado_means: dict[str, float] = {}
-        if os.path.exists(n_all_path):
-            estado_means = _load_estado_means(n_all_path)
-else:
-    nivel_path   = cfg["niveis"][_nivel_key(status_filter)]
-    modelo_path  = cfg["modelos_urnas"][_nivel_key(status_filter)]
-
-    for path_check, label in [(nivel_path, "Níveis"), (modelo_path, "Modelos")]:
-        if not os.path.exists(path_check):
-            st.error(f"Arquivo não encontrado ({label}): `{path_check}`")
-            st.stop()
-
-    with st.spinner("Carregando dados..."):
-        df_secoes    = _load_csv_cached(nivel_path)
-        df_voter_log = _load_csv_cached(modelo_path)
-
-        n_all_path = cfg["niveis"][FILTER_SOMENTE_CRITICAS]
-        n_0_path   = cfg["niveis"][0]
-
-        count_criticas = _count_rows(n_all_path) if os.path.exists(n_all_path) else 0
-        count_n0       = _count_rows(n_0_path)   if os.path.exists(n_0_path)   else 0
-        total_secoes_global = count_criticas + count_n0
-
-        estado_means: dict[str, float] = {}
-        if status_filter is not None and os.path.exists(n_all_path):
-            estado_means = _load_estado_means(n_all_path)
+with st.spinner("Carregando e organizando os dados…"):
+    df_secoes = load_csv(nivel_path)
+    df_voter_log = df_secoes.copy() if modelo_path == nivel_path else load_csv(modelo_path)
+    total_secoes_global = sum(
+        count_rows(p) for p in (n_all_path, n_0_path) if os.path.exists(p)
+    )
+    estado_means = load_estado_means(n_all_path) if os.path.exists(n_all_path) else {}
 
 analise = UrnasCriticasAnalysis.from_dataframes(
     df_2022=df_voter_log,
@@ -826,103 +85,57 @@ analise = UrnasCriticasAnalysis.from_dataframes(
     total_secoes_override=total_secoes_global,
 )
 
-overview = analise.get_overview()
-pct = overview["total_secoes_criticas"] / max(overview["total_secoes"], 1)
+# ── Cabeçalho ────────────────────────────────────────────────────────────────
+ov = analise.get_overview()
+df_c = analise.df_criticas
+taxa = ov["total_secoes_criticas"] / max(ov["total_secoes"], 1)
+modelos = ", ".join(ov["modelos_presentes"]) or "nenhum modelo identificado"
+n_mun = int(df_c["NM_MUNICIPIO"].nunique()) if "NM_MUNICIPIO" in df_c.columns else None
+atraso_max = df_c["ATRASO_FILA_MINUTOS"].max() if "ATRASO_FILA_MINUTOS" in df_c.columns else None
+kpis = [{"label": "Votantes nas seções", "value": fmt_int(ov["total_votantes"]), "sub": "eleitores processados"}]
+if n_mun is not None:
+    kpis.append({"label": "Municípios no recorte", "value": n_mun, "sub": "com ao menos uma seção"})
+if atraso_max is not None and atraso_max == atraso_max:
+    kpis.append({"label": "Maior atraso na fila", "value": f"{atraso_max:.0f} min", "sub": "seção mais atrasada"})
+kpis.append({"label": "Modelos de urna", "value": len(ov["modelos_presentes"]), "sub": modelos})
 
-# ── KPIs ───────────────────────────────────────────────────────────────────────
-with k1:
-    st.markdown(f"""
-        <div style="margin-top: 1.8rem; height: 100%;">
-            <div class="kpi-box" tabindex="0">
-                <div class="kpi-label">Selecionadas</div>
-                <div class="kpi-value kpi-danger">{overview['total_secoes_criticas']:,}</div>
-                <div class="kpi-tooltip">Total de seções que atendem aos filtros operacionais ativos.</div>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-with k2:
-    st.markdown(f"""
-        <div style="margin-top: 1.8rem; height: 100%;">
-            <div class="kpi-box" tabindex="0">
-                <div class="kpi-label">Total Seções</div>
-                <div class="kpi-value">{overview['total_secoes']:,}</div>
-                <div class="kpi-tooltip">Universo total de seções mapeadas no estado para este ano.</div>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-with k3:
-    st.markdown(f"""
-        <div style="margin-top: 1.8rem; height: 100%;">
-            <div class="kpi-box" tabindex="0">
-                <div class="kpi-label">Votantes</div>
-                <div class="kpi-value kpi-success">{overview['total_votantes']:,}</div>
-                <div class="kpi-tooltip">Soma de fluxo total de eleitores processados nas seções selecionadas.</div>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-with k4:
-    modelos_str = ", ".join(overview['modelos_presentes']) if overview['modelos_presentes'] else "Nenhum"
-    st.markdown(f"""
-        <div style="margin-top: 1.8rem; height: 100%;">
-            <div class="kpi-box" tabindex="0">
-                <div class="kpi-label">Modelos</div>
-                <div class="kpi-value">{len(overview['modelos_presentes'])}</div>
-                <div class="kpi-tooltip">Modelos ativos na seleção:<br><b style="color:#0EA5E9;">{modelos_str}</b></div>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-with k5:
-    st.markdown(f"""
-        <div style="margin-top: 1.8rem; height: 100%;">
-            <div class="kpi-box" tabindex="0">
-                <div class="kpi-label">Taxa</div>
-                <div class="kpi-value kpi-accent">{pct:.1%}</div>
-                <div class="kpi-tooltip">Representatividade percentual da seleção sobre o ecossistema total do estado.</div>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
+with slot_cabecalho:
+    st.markdown(
+        app_header(
+            {"label": "Seções no recorte", "value": fmt_int(ov["total_secoes_criticas"]), "pct": taxa,
+             "sub": f"das {fmt_int(ov['total_secoes'])} seções do estado"},
+            kpis[:3],
+        ),
+        unsafe_allow_html=True,
+    )
 
-del overview
-# Não chamar gc.collect() aqui para não interferir com cache
-
-st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ABAS PRINCIPAIS
-# ═══════════════════════════════════════════════════════════════════════════════
-tab_geo, tab_criticidade, tab_modelo = st.tabs([
-    "Visão Geográfica",
-    "Análise por Criticidade",
-    "Análise por Modelo de Urna",
+tab_geo, tab_crit, tab_modelo, tab_sobre = st.tabs([
+    ":material/map: Território",
+    ":material/warning: Criticidade",
+    ":material/memory: Modelos de urna",
+    ":material/info: Sobre",
 ])
 
 with tab_geo:
-    render_tab_geo(ano_selecionado, status_filter, estado_means)
+    render_tab_geo(ano, status_filter, estado_means)
 
-with tab_criticidade:
+with tab_crit:
     render_tab_criticidade(analise.df_criticas, status_filter, estado_means)
 
 with tab_modelo:
     render_tab_modelo(analise)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CLEANUP
-# ═══════════════════════════════════════════════════════════════════════════════
-del analise, df_secoes, df_voter_log
+with tab_sobre:
+    render_tab_sobre()
+
+del ov, df_c, analise, df_secoes, df_voter_log
 gc.collect()
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FOOTER
-# ═══════════════════════════════════════════════════════════════════════════════
-st.markdown("""
-    <div class="footer">
-        <div style="font-weight: 600; color: #adb5bd; margin-bottom: 0.35rem;">
-            UFS · TRE — Sistema de Análise de Urnas Eletrônicas
-        </div>
-        <div style="margin-bottom: 0.4rem; color: var(--color-ink-soft); font-size: 0.82rem;">
-            Desenvolvido pela equipe da <a href="https://sites.google.com/mat.ufs.br/lame/lame?authuser=0" target="_blank"
-            style="color: var(--color-brand); text-decoration: none; font-weight: 600; border-bottom: 1px dashed var(--color-brand);">LAME (Liga Acadêmica de Matemática e Empresa)</a>
-        </div>
-        <div>Dados: TSE / Urnas Eletrônicas · Eleições Sergipe | Dashboard desenvolvido com Streamlit</div>
-    </div>
-""", unsafe_allow_html=True)
+st.markdown(
+    '<div class="footer">'
+    'Universidade Federal de Sergipe · Tribunal Regional Eleitoral de Sergipe.<br>'
+    'Desenvolvido pela <a href="https://sites.google.com/mat.ufs.br/lame/lame?authuser=0" '
+    'target="_blank" rel="noopener">LAME — Liga Acadêmica de Matemática e Empresa</a>. '
+    'Dados: Tribunal Superior Eleitoral (TSE).</div>',
+    unsafe_allow_html=True,
+)
