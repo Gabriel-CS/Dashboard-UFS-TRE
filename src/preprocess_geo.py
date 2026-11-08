@@ -6,7 +6,7 @@ import pandas as pd
 from src.analysis import FILTER_COM_ATRASO, FILTER_CONTINGENCIA, FILTER_SOMENTE_CRITICAS
 
 # Configuração dos anos eleitorais e níveis de filtro (textuais e numéricos)
-YEARS = ["2018", "2022"]
+YEARS = ["2018", "2022", "2026"]
 STATUS_LEVELS = [0, 1, 2, 3, 4, FILTER_SOMENTE_CRITICAS, FILTER_COM_ATRASO, FILTER_CONTINGENCIA]
 
 
