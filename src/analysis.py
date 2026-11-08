@@ -52,7 +52,7 @@ def ramp(n: int) -> list[str]:
 STATUS_LABELS: dict[int, str] = {
     0: "Sem atraso",
     1: "Normal",
-    2: "Atraso leme",
+    2: "Atraso leve",
     3: "Atraso moderado",
     4: "Atraso elevado",
 }
