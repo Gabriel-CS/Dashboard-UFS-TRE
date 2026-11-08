@@ -1,316 +1,192 @@
+"""Componentes de UI reutilizáveis do dashboard."""
 from __future__ import annotations
-
 import html
 import re
-
+from contextlib import contextmanager
 import streamlit as st
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Utilitário interno — o parser Markdown do Streamlit trata qualquer linha
-# indentada com 4+ espaços como um bloco de código, mesmo dentro de
-# st.markdown(..., unsafe_allow_html=True). Como as funções abaixo montam HTML
-# a partir de f-strings triplas (que herdam a indentação do código-fonte),
-# isso fazia o HTML "vazar" como texto puro em vez de renderizar. Esta função
-# remove quebras de linha + espaços de indentação antes de devolver o HTML,
-# eliminando o gatilho do bloco de código.
-# ──────────────────────────────────────────────────────────────────────────────
-
 _LEADING_WS_RE = re.compile(r"\n[ \t]*")
-
+_CARD_SEQ = 0
 
 def _flatten(fragment: str) -> str:
-    """Remove indentação/quebras de linha que confundem o parser Markdown."""
     return _LEADING_WS_RE.sub("", fragment).strip()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Botão informativo interativo — um ícone "ⓘ" que, ao passar o cursor por cima,
-# revela um tooltip explicando o que o gráfico/painel logo abaixo representa.
-# Puramente CSS (sem JS), reutilizado em todos os gráficos do dashboard.
-# ──────────────────────────────────────────────────────────────────────────────
+def _tip_html(texto: str, icon: str = "ⓘ") -> str:
+    return (
+        '<span class="info-tip-btn">' + icon
+        + '<span class="info-tip-box">' + html.escape(texto) + '</span>'
+        + '</span>'
+    )
 
-# CSS do tooltip flattenizado (sem quebras de linha) para embutir no markup.
-# Usar _flatten garante que o parser Markdown do Streamlit não trate
-# nenhuma linha como bloco de código.
-_TOOLTIP_CSS_FLAT = _flatten("""\
-<style>
-.info-tip-wrap {
-display: flex;
-justify-content: flex-start;
-margin: 0 0 0.3rem 0;
-}
-.info-tip-btn {
-position: relative;
-display: inline-flex;
-align-items: center;
-justify-content: center;
-width: 20px;
-height: 20px;
-border-radius: 50%;
-background: var(--color-surface-2, #f1f5f9);
-border: 1px solid var(--color-border, #e2e8f0);
-color: var(--color-brand, #0072B2);
-font-size: 0.72rem;
-font-weight: 700;
-cursor: help;
-user-select: none;
-transition: background 0.15s ease, transform 0.15s ease;
-}
-.info-tip-btn:hover {
-background: var(--color-brand, #0072B2);
-color: #ffffff;
-transform: scale(1.08);
-}
-.info-tip-box {
-visibility: hidden;
-opacity: 0;
-position: absolute;
-bottom: 135%;
-left: 50%;
-transform: translateX(-25%) translateY(4px);
-background: var(--color-ink, #0f172a);
-color: #f8fafc;
-text-align: left;
-border-radius: 8px;
-padding: 0.55rem 0.75rem;
-font-size: 0.74rem;
-font-weight: 400;
-line-height: 1.4;
-width: max-content;
-max-width: 260px;
-z-index: 9999;
-box-shadow: 0 10px 28px rgba(15, 23, 42, 0.28);
-transition: opacity 0.15s ease, transform 0.15s ease;
-pointer-events: none;
-}
-.info-tip-box::after {
-content: "";
-position: absolute;
-top: 100%;
-left: 25%;
-transform: translateX(-50%);
-border-width: 5px;
-border-style: solid;
-border-color: var(--color-ink, #0f172a) transparent transparent transparent;
-}
-.info-tip-btn:hover .info-tip-box {
-visibility: visible;
-opacity: 1;
-transform: translateX(-25%) translateY(0);
-}
-</style>
-""")
-
+@contextmanager
+def chart_card(title: str, description: str = "", info: str = ""):
+    global _CARD_SEQ
+    _CARD_SEQ += 1
+    key = f"cc{_CARD_SEQ}"
+    
+    # `info` é mantido na assinatura por compatibilidade, mas não é mais exibido:
+    # repetia a descrição visível e o conteúdo completo está na aba Sobre.
+    tip_html = ""
+    desc_html = (
+        f'<div class="chart-card-desc">{html.escape(description)}</div>'
+        if description else ""
+    )
+    
+    head = _flatten(f"""
+        <div class="chart-card-head">
+            <div class="chart-card-title">
+                <span>{html.escape(title)}</span>
+                {tip_html}
+            </div>
+            {desc_html}
+        </div>
+    """)
+    
+    with st.container(key=key):
+        st.markdown(head, unsafe_allow_html=True)
+        yield
 
 def info_card(texto: str, icon: str = "ⓘ") -> None:
-    """
-    Renderiza um ícone "ⓘ" com tooltip explicativo.
-
-    O <style> é embutido no mesmo st.markdown do markup para que o
-    Streamlit nunca separe o CSS do HTML durante o diff de rerun
-    (toggling de checkboxes, filtros, etc.). Sem isso, o <style> era
-    removido e os tooltips perdiam visibility:hidden, vazando texto.
-    """
-    texto_seguro = html.escape(texto)
-    markup = (
-        _TOOLTIP_CSS_FLAT
-        + '<div class="info-tip-wrap">'
-        + '<span class="info-tip-btn">' + icon
-        + '<span class="info-tip-box">' + texto_seguro + '</span>'
-        + '</span>'
-        + '</div>'
+    st.markdown(
+        '<div class="info-tip-wrap">' + _tip_html(texto, icon) + '</div>',
+        unsafe_allow_html=True,
     )
-    st.markdown(markup, unsafe_allow_html=True)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Section Header — título de seção limpo e padronizado
-# ──────────────────────────────────────────────────────────────────────────────
 
 def section_header(title: str, description: str = "") -> str:
-    """
-    Retorna HTML para um cabeçalho de seção limpo, com título e descrição opcional.
-    Substitui os múltiplos st.markdown() repetidos em cada função de render.
-    """
-    desc_html = f'<div class="section-desc">{html.escape(description)}</div>' if description else ""
+    desc_html = (
+        f'<div class="section-desc">{html.escape(description)}</div>'
+        if description else ""
+    )
     return _flatten(f"""
         <div class="section-header"><h2>{html.escape(title)}</h2></div>
         {desc_html}
     """)
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Metric Card Row — cards horizontais de KPI compactos
-# ──────────────────────────────────────────────────────────────────────────────
-
 def metric_card_row(metrics: list[dict]) -> str:
     """
-    Gera uma linha de cards de métricas compactos (modelo, seções, votantes).
-
-    Parameters
-    ----------
-    metrics : lista de dicts com chaves:
-        - modelo: nome do modelo (ex: "UE2020")
-        - cor: cor hex do modelo
-        - secoes: quantidade de seções
-        - pct_secoes: percentual de seções (float 0-100)
-        - votantes: quantidade de votantes
-        - pct_votantes: percentual de votantes (float 0-100)
-        - specs: lista opcional de tuplas (rótulo, valor) com as configurações
-          técnicas do modelo, exibida em tooltip ao passar o mouse sobre o
-          nome do modelo (substitui a antiga legenda no topo da aba)
+    Cards de modelos remodelados com labels explícitos para cada métrica.
     """
-    css = _flatten("""
-        <style>
-        .metric-row { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:1.5rem; }
-        .metric-card {
-            flex:1; min-width:180px; background:var(--color-surface,#ffffff);
-            border:1px solid var(--color-border,#e2e8f0); border-radius:var(--radius-card,12px);
-            padding:0.85rem 1rem 0.75rem; box-shadow:var(--shadow-card,0 1px 4px rgba(15,23,42,0.05));
-            transition:box-shadow 0.15s ease, transform 0.15s ease;
-        }
-        .metric-card:hover { box-shadow:0 4px 14px rgba(15,23,42,0.09); transform:translateY(-1px); }
-        .metric-card-head { display:flex; align-items:center; gap:7px; margin-bottom:0.65rem; }
-        .metric-card-dot { width:10px; height:10px; border-radius:3px; flex-shrink:0; }
-        .metric-card-name-wrap { position:relative; display:inline-flex; }
-        .metric-card-name {
-            font-size:0.8rem; font-weight:700; color:var(--color-ink-mid,#334155); letter-spacing:0.01em;
-        }
-        .metric-card-name.has-specs {
-            cursor:help; border-bottom:1px dotted var(--color-ink-muted,#94a3b8);
-        }
-        .metric-card-tooltip {
-            visibility:hidden; opacity:0;
-            position:absolute; z-index:99; top:130%; left:0;
-            width:max-content; max-width:280px;
-            background-color:var(--color-ink,#0f172a); color:#f8fafc;
-            border-radius:var(--radius-sm,8px); padding:10px 14px;
-            font-size:0.74rem; font-weight:500; line-height:1.55;
-            text-align:left; white-space:normal;
-            box-shadow:0 10px 25px rgba(15,23,42,0.25);
-            transition:opacity 0.18s ease, top 0.18s ease;
-            pointer-events:none;
-        }
-        .metric-card-tooltip b { color:#7dd3fc; font-weight:700; }
-        .metric-card-tooltip::after {
-            content:""; position:absolute; bottom:100%; left:14px;
-            border-width:6px; border-style:solid;
-            border-color:transparent transparent var(--color-ink,#0f172a) transparent;
-        }
-        .metric-card-name-wrap:hover .metric-card-tooltip,
-        .metric-card-name-wrap:focus-within .metric-card-tooltip { visibility:visible; opacity:1; top:120%; }
-        .metric-card-stats { display:flex; gap:14px; }
-        .metric-card-stat { flex:1; min-width:0; }
-        .metric-card-value { font-size:1.15rem; font-weight:800; color:var(--color-ink,#0f172a); line-height:1.1; }
-        .metric-card-label { display:flex; align-items:baseline; gap:5px; margin-top:2px; }
-        .metric-card-label span:first-child {
-            font-size:0.62rem; color:var(--color-ink-muted,#94a3b8); text-transform:uppercase;
-            letter-spacing:0.06em; font-weight:600;
-        }
-        .metric-card-pct {
-            font-size:0.62rem; font-weight:700; padding:1px 5px; border-radius:99px;
-            background:var(--color-surface-2,#f1f5f9); color:var(--color-ink-mid,#334155);
-        }
-        .metric-card-track { width:100%; height:4px; border-radius:99px; background:#eef1f5; margin-top:0.65rem; overflow:hidden; }
-        .metric-card-fill { height:4px; border-radius:99px; }
-        </style>
-    """)
-
-    # CSS embutido junto ao HTML — impede que o Streamlit separe
-    # o <style> dos cards durante o diff de rerun.
-    cards_html = css + ""
+    cards_html = ""
     for m in metrics:
+        cor = m.get("cor") or "#174B7A"
         specs = m.get("specs")
+        
         if specs:
             tooltip_lines = "<br>".join(
-                f"<b>{html.escape(str(campo))}:</b> {html.escape(str(valor))}" for campo, valor in specs
+                f"<b>{html.escape(str(c))}:</b> {html.escape(str(v))}"
+                for c, v in specs
             )
         else:
             tooltip_lines = "Configuração técnica não disponível para este modelo."
-
+        
         name_html = _flatten(f"""
             <div class="metric-card-name-wrap" tabindex="0">
-                <span class="metric-card-name has-specs">{m['modelo']}</span>
-                <div class="metric-card-tooltip"><b style="color:#fff;">{m['modelo']}</b><br>{tooltip_lines}</div>
+                <span class="metric-card-model" style="color:{cor};">
+                    {m['modelo']}
+                </span>
+                <div class="metric-card-tooltip">
+                    <b style="color:#fff;">{m['modelo']}</b><br>{tooltip_lines}
+                </div>
             </div>
         """)
-
+        
         cards_html += _flatten(f"""
-            <div class="metric-card" style="border-top:3px solid {m['cor']};">
-                <div class="metric-card-head">
-                    <div class="metric-card-dot" style="background:{m['cor']};"></div>
-                    {name_html}
-                </div>
+            <div class="metric-card" style="border-top-color:{cor};">
+                <div class="metric-card-header">{name_html}</div>
                 <div class="metric-card-stats">
                     <div class="metric-card-stat">
-                        <div class="metric-card-value">{m['secoes']:,}</div>
-                        <div class="metric-card-label">
-                            <span>seções</span>
-                            <span class="metric-card-pct">{m['pct_secoes']:.1f}%</span>
+                        <div class="metric-card-stat-label">Seções</div>
+                        <div class="metric-card-stat-value" style="color:{cor};">
+                            {m['secoes']:,}
                         </div>
+                        <div class="metric-card-stat-pct">{m['pct_secoes']:.1f}% do total</div>
                     </div>
                     <div class="metric-card-stat">
-                        <div class="metric-card-value">{m['votantes']:,}</div>
-                        <div class="metric-card-label">
-                            <span>votantes</span>
-                            <span class="metric-card-pct">{m['pct_votantes']:.1f}%</span>
+                        <div class="metric-card-stat-label">Votantes</div>
+                        <div class="metric-card-stat-value" style="color:{cor};">
+                            {m['votantes']:,}
                         </div>
+                        <div class="metric-card-stat-pct">{m['pct_votantes']:.1f}% do total</div>
                     </div>
                 </div>
                 <div class="metric-card-track">
-                    <div class="metric-card-fill" style="width:{min(m['pct_secoes'], 100):.1f}%;background:{m['cor']};"></div>
+                    <div class="metric-card-fill"
+                         style="width:{min(m['pct_secoes'], 100):.1f}%;background:{cor};"></div>
                 </div>
             </div>
         """)
+    
+    return f'<div class="metric-row">{cards_html}</div>'
 
-    return _flatten(f'<div class="metric-row">{cards_html}</div>')
+def model_legend(models: list[str], color_map: dict[str, str]) -> str:
+    items = "".join(
+        f'<div class="model-legend-item">'
+        f'<span class="model-legend-dot" style="background:{color_map.get(m, "#527080")};"></span>'
+        f'<span>{html.escape(str(m))}</span>'
+        f'</div>'
+        for m in models
+    )
+    return f'<div class="model-legend-wrap">{items}</div>'
 
+def kpi_strip(items: list[dict]) -> str:
+    cells = "".join(
+        f'<div class="kpi-cell" title="{html.escape(i.get("hint", ""))}">'
+        f'<div class="kpi-label">{html.escape(i["label"])}</div>'
+        f'<div class="kpi-value {(("kpi-" + i["tone"]) if i.get("tone") else "")}">'
+        f'{html.escape(str(i["value"]))}</div>'
+        f'</div>'
+        for i in items
+    )
+    return f'<div class="kpi-strip">{cells}</div>'
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Alert Box — caixas de alerta estilizadas
-# ──────────────────────────────────────────────────────────────────────────────
+_SUBTITULO_LEGENDA = (
+    '<div style="font-size:0.72rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;'
+    'color:var(--color-brand);margin:{margem} 0 4px;">{texto}</div>'
+)
+
+def _linhas_legenda(detalhes) -> str:
+    return "".join(
+        f'<div style="display:grid;grid-template-columns:14px 1fr;gap:10px;padding:8px 0;'
+        f'border-bottom:1px solid var(--color-border);">'
+        f'<div style="width:10px;height:10px;margin-top:5px;border-radius:2px;background:{d["cor"]};"></div>'
+        f'<div><div style="font-size:0.88rem;font-weight:600;color:var(--color-ink);">'
+        f'{html.escape(titulo)}'
+        f'<span style="font-weight:400;color:var(--color-ink-soft);">  {html.escape(d["intervalo"])}</span></div>'
+        f'<div style="font-size:0.8rem;color:var(--color-ink-soft);line-height:1.4;">{html.escape(d["desc"])}</div>'
+        f'</div></div>'
+        for titulo, d in detalhes
+    )
+
+def legenda_status(detalhes: dict[int, dict], titulo: str = "Níveis de atraso") -> str:
+    itens = [(f'Nível {lvl} · {d["label"]}', d) for lvl, d in detalhes.items()]
+    return (
+        '<div style="min-width:300px">'
+        + _SUBTITULO_LEGENDA.format(margem="0", texto=html.escape(titulo))
+        + _linhas_legenda(itens) + '</div>'
+    )
+
+def legenda_filtros(detalhes: dict[str, dict], titulo: str = "Filtros agrupados") -> str:
+    itens = [(d["label"], d) for d in detalhes.values()]
+    return (
+        '<div style="min-width:300px">'
+        + _SUBTITULO_LEGENDA.format(margem="16px", texto=html.escape(titulo))
+        + _linhas_legenda(itens) + '</div>'
+    )
 
 def alert_box(message: str, alert_type: str = "warning") -> str:
-    """
-    Gera HTML para uma caixa de alerta estilizada.
-
-    Parameters
-    ----------
-    message : texto do alerta (pode conter HTML inline para negrito)
-    alert_type : tipo do alerta — "danger" | "success" | "warning" | "info"
-    """
     styles = {
-        "danger": {
-            "bg": "#fef2f2",
-            "border": "#dc2626",
-            "color": "#991b1b",
-            "icon": "&#x26A0;",
-        },
-        "success": {
-            "bg": "#f0fdf4",
-            "border": "#16a34a",
-            "color": "#15803d",
-            "icon": "&#x2714;",
-        },
-        "warning": {
-            "bg": "#fffbeb",
-            "border": "#d97706",
-            "color": "#92400e",
-            "icon": "&#x26A0;",
-        },
-        "info": {
-            "bg": "#f0f9ff",
-            "border": "#0ea5e9",
-            "color": "#0369a1",
-            "icon": "&#x2139;",
-        },
+        "danger":  {"bg": "#FDF1F1", "border": "#C62828", "color": "#7F1D1D", "icon": "⚠"},
+        "success": {"bg": "#EDF7F1", "border": "#0B8A47", "color": "#095F33", "icon": "✔"},
+        "warning": {"bg": "#FFF9E0", "border": "#E2B400", "color": "#6B5200", "icon": "⚠"},
+        "info":    {"bg": "#E9EEF9", "border": "#174A78", "color": "#183247", "icon": "ℹ"},
     }
-
     s = styles.get(alert_type, styles["info"])
+    
     return _flatten(f"""
         <div style="
             background: {s['bg']};
-            border-left: 4px solid {s['border']};
-            border-radius: 0 10px 10px 0;
+            border-left: 3px solid {s['border']};
+            border-radius: 0 var(--radius-card, 8px) var(--radius-card, 8px) 0;
             padding: 1rem 1.25rem;
             margin-bottom: 1rem;
             color: {s['color']};
@@ -321,18 +197,7 @@ def alert_box(message: str, alert_type: str = "warning") -> str:
         </div>
     """)
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Botão de Contingência — toggle em destaque para o filtro de urnas críticas
-# ──────────────────────────────────────────────────────────────────────────────
-
 def contingency_toggle_css(container_key: str) -> str:
-    """
-    CSS simples para destacar a caixa de seleção do filtro de contingência:
-    uma borda colorida e leve realce de fundo quando marcada, sem elementos
-    extras. Ancorado ao container Streamlit via `st-key-{container_key}`
-    (Streamlit >= 1.31).
-    """
     return _flatten(f"""
         <style>
         div.st-key-{container_key},
@@ -344,24 +209,94 @@ def contingency_toggle_css(container_key: str) -> str:
         div.st-key-{container_key} {{
             display: inline-flex;
             align-items: center;
-            background: #fff8e6;
-            border: 1px solid #f2d49a;
-            border-radius: 6px;
+            background: #FFF9E0;
+            border: 1px solid #E6CE63;
+            border-radius: var(--radius-sm, 6px);
             padding: 0.1rem 0.55rem;
-            transition: background 0.15s ease, border-color 0.15s ease;
         }}
         div.st-key-{container_key}:has(input:checked) {{
-            background: #fdf0cc;
-            border-color: #e8b95e;
+            background: #FBF1C4;
+            border-color: #E2B400;
         }}
         div.st-key-{container_key} label[data-testid="stWidgetLabel"] p {{
             font-weight: 600;
-            font-size: 0.78rem;
-            color: #92700f;
+            font-size: 0.82rem;
+            color: #6B5200;
             white-space: nowrap;
         }}
         div.st-key-{container_key} div[data-testid="stCheckbox"] {{
             gap: 0.35rem;
         }}
         </style>
+    """)
+
+def fmt_int(n):
+    return f"{int(n):,}".replace(",", ".")
+
+_ICONE_URNA = (
+    '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" '
+    'stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="9" rx="2"/>'
+    '<path d="M8 11V7.5L12 4l4 3.5V11"/><path d="M9.5 15.5l1.7 1.7 3.3-3.4"/></svg>'
+)
+
+def app_header(principal, kpis):
+    """Cabeçalho do painel: marca e faixa de KPIs do recorte ativo."""
+    pct = min(principal["pct"] * 100, 100)
+    kpi_main = (
+        '<div class="app-kpi app-kpi-main">'
+        f'<div class="app-kpi-label">{html.escape(principal["label"])}</div>'
+        f'<div class="app-kpi-value">{html.escape(principal["value"])}</div>'
+        f'<div class="app-kpi-sub"><b>{principal["pct"]:.1%}</b> {html.escape(principal["sub"])}</div>'
+        f'<div class="app-kpi-bar"><div style="width:{pct:.1f}%"></div></div></div>'
+    )
+    kpi_rest = "".join(
+        '<div class="app-kpi">'
+        f'<div class="app-kpi-label">{html.escape(k["label"])}</div>'
+        f'<div class="app-kpi-value">{html.escape(str(k["value"]))}</div>'
+        f'<div class="app-kpi-sub">{html.escape(k.get("sub", ""))}</div></div>'
+        for k in kpis
+    )
+    return _flatten(f"""
+        <div class="app-header">
+            <div class="app-header-top">
+                <div class="app-header-brand">
+                    <div class="app-header-mark">{_ICONE_URNA}</div>
+                    <div>
+                        <div class="app-header-eyebrow">UFS · TRE-SE · Painel analítico</div>
+                        <h1 class="app-header-title">Urnas eletrônicas em Sergipe</h1>
+                        <p class="app-header-sub">Onde a votação atrasou, quais modelos estavam em campo e quem votou nessas seções.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="app-kpis">{kpi_main}{kpi_rest}</div>
+        </div>
+    """)
+
+def stat_tiles(items):
+    """Cartões de indicadores: label, value, sub opcional, cor opcional da borda."""
+    cells = "".join(
+        f'<div class="stat-tile" style="--tile-color:{i.get("cor", "#1B4B7A")};">'
+        f'<div class="stat-tile-label">{html.escape(i["label"])}</div>'
+        f'<div class="stat-tile-value">{html.escape(str(i["value"]))}</div>'
+        f'<div class="stat-tile-sub">{html.escape(i.get("sub", ""))}</div></div>'
+        for i in items
+    )
+    return f'<div class="stat-tiles">{cells}</div>'
+
+def callout(texto_html):
+    return f'<div class="callout">{texto_html}</div>'
+
+def case_head(titulo, subtitulo, status_label, status_cor, chips):
+    chips_html = "".join(f'<span class="case-chip">{c}</span>' for c in chips)
+    return _flatten(f"""
+        <div class="case-head" style="--case-color:{status_cor};">
+            <div class="case-head-row">
+                <div>
+                    <div class="case-head-kicker">{html.escape(subtitulo)}</div>
+                    <h3 class="case-head-title">{html.escape(titulo)}</h3>
+                </div>
+                <span class="status-pill" style="background:{status_cor};">{html.escape(status_label)}</span>
+            </div>
+            <div class="case-head-chips">{chips_html}</div>
+        </div>
     """)
