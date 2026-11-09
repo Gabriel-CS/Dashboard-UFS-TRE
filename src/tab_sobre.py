@@ -116,8 +116,56 @@ Há um filtro opcional **Mostrar apenas urnas de contingência**, que isola as s
   número de eleitores e de eleitores PCD.
 - **Resumo:** qual evento mais consumiu tempo e quantas vezes a média do filtro isso representa.
 - **Contingência:** se houve troca de urna, os modelos envolvidos, horários, duração do procedimento, tempo total de troca e alerta de pareamento suspeito.
-- **Onde o tempo foi perdido:** tempo acumulado em timeout de biometria, inatividade e teclas indevidas, comparado com a média do filtro.
+- **Onde o tempo foi perdido:** tempo total perdido e duração média de cada ocorrência de timeout de biometria, inatividade e teclas indevidas, nesta seção e no filtro. O quadro de eventos operacionais é explicado em detalhe logo abaixo.
 - **Perfil dos eleitores:** percentual por faixa etária e escolaridade, na seção e na média do filtro.
+        """
+    )
+    _titulo(
+        "Manual do quadro de eventos operacionais",
+        "O que significa cada número do gráfico e da tabela do estudo de seção.",
+    )
+    st.markdown(
+        """
+**Três eventos acompanhados:** timeout de biometria, inatividade do eleitor e teclas indevidas.
+
+**Duas escalas, dois gráficos.** O gráfico tem duas faixas porque mede coisas diferentes, em unidades diferentes:
+- **Faixa de cima, em minutos:** o **tempo total** perdido com o evento ao longo da votação.
+- **Faixa de baixo, em segundos:** a **duração média de cada ocorrência**, isto é, quanto tempo dura cada vez que o evento acontece.
+
+Em ambas, a **barra colorida** é a seção escolhida e a **barra clara** é o filtro (o conjunto de seções do recorte atual).
+
+**Significado de cada termo**
+
+| Termo | O que é | Como é calculado |
+|---|---|---|
+| **Nº de ocorrências** | Quantas vezes o evento foi registrado | Contagem na seção |
+| **Tempo total** | Tempo perdido com o evento, somando todas as ocorrências | Soma dos tempos registrados na seção |
+| **Tempo médio por ocorrência** | Duração típica de cada vez que o evento acontece | Tempo total ÷ nº de ocorrências |
+| **Ocorrências médias por seção (filtro)** | Quantas vezes o evento acontece numa seção típica do filtro | Média do nº de ocorrências entre as seções |
+| **Tempo total médio por seção (filtro)** | Quanto tempo uma seção típica do filtro perde com o evento | Média do tempo total entre as seções |
+| **Tempo médio por ocorrência (filtro)** | Duração típica de cada ocorrência no filtro | Todo o tempo somado ÷ todas as ocorrências somadas |
+
+**Por que são três números do filtro e não um.** Eles respondem a perguntas diferentes e se relacionam assim:
+tempo total médio por seção = ocorrências médias por seção × tempo médio por ocorrência.
+Uma seção pode perder pouco tempo no total porque o evento quase não acontece, ou porque cada ocorrência é curta. A faixa de baixo ajuda a separar os dois casos.
+
+**Exemplo.** Um filtro com 3 seções e timeout de biometria:
+
+| Seção | Ocorrências | Tempo total |
+|---|---|---|
+| A | 10 | 100 s |
+| B | 0 | 0 s |
+| C | 2 | 20 s |
+
+- Ocorrências médias por seção: (10 + 0 + 2) ÷ 3 = **4**
+- Tempo total médio por seção: (100 + 0 + 20) ÷ 3 = **40 s**
+- Tempo médio por ocorrência: 120 ÷ 12 = **10 s**, e vale 4 × 10 = 40 s, como na relação acima.
+
+**Cuidados de leitura**
+- O tempo médio por ocorrência do filtro **não é a média das médias** das seções. Ele pesa cada ocorrência igualmente, então seções com muitas ocorrências influenciam mais.
+- "—" na tabela significa que o evento não ocorreu na seção (não há como dividir por zero) ou que o dado não está disponível. Não significa tempo zero.
+- "Por ocorrência" não é "por eleitor". Um mesmo eleitor pode ter mais de uma ocorrência, e a maioria dos eleitores não tem nenhuma.
+- O texto de resumo da seção compara o tempo total do evento que mais consumiu tempo com o **tempo total médio por seção do filtro**, a barra clara da faixa de cima.
         """
     )
 
@@ -162,6 +210,9 @@ def _glossario() -> None:
 - **Zona eleitoral:** divisão da Justiça Eleitoral que agrupa seções. A seção é identificada pela zona e pelo número.
 - **Urna de contingência:** urna reserva que substitui a original quando ela falha, ou que opera desde o início da votação.
 - **Atraso na fila:** atraso registrado na seção, em minutos. Define o nível.
+- **Ocorrência:** cada registro de um evento operacional (timeout de biometria, inatividade ou tecla indevida).
+- **Tempo total:** soma do tempo perdido em todas as ocorrências de um evento.
+- **Tempo médio por ocorrência:** tempo total ÷ nº de ocorrências.
 - **Timeout de biometria:** a leitura biométrica excedeu o tempo previsto.
 - **Inatividade:** tempo em que o eleitor fica parado na urna.
 - **Tecla indevida:** tecla inválida digitada na urna.
