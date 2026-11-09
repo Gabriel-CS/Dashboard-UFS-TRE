@@ -2,6 +2,7 @@ from __future__ import annotations
 import gc
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 from src.analysis import (
     FILTER_LABELS,
@@ -694,15 +695,35 @@ def _rotulos_secoes(d):
     return txt + _mascara_contingencia(d).map({True: " · contingência", False: ""})
 
 
+def _media_por_ocorrencia(tempo, ocorr):
+    return tempo / ocorr if pd.notna(tempo) and pd.notna(ocorr) and ocorr > 0 else float("nan")
+
+
+def _media_filtro_por_ocorrencia(df, c_o, c_t):
+    if c_o not in df.columns or c_t not in df.columns:
+        return float("nan")
+    return _media_por_ocorrencia(df[c_t].sum(), df[c_o].sum())
+
+
+def _fmt_seg(v):
+    if pd.isna(v):
+        return "—"
+    return f"{v:.1f}s" if v < 60 else _fmt_min_sec(v)
+
+
 def _linhas_eventos(urna, df):
     linhas = []
     for rotulo, c_o, c_t in _EVENTOS:
+        o_sec = _num(urna.get(c_o))
+        t_sec = _num(urna.get(c_t)) if c_t in urna.index else float("nan")
         linhas.append({
             "rotulo": rotulo,
-            "o_sec": _num(urna.get(c_o)),
+            "o_sec": o_sec,
             "o_med": float(df[c_o].mean()) if c_o in df.columns else float("nan"),
-            "t_sec": _num(urna.get(c_t)) if c_t in urna.index else float("nan"),
+            "t_sec": t_sec,
             "t_med": float(df[c_t].mean()) if c_t in df.columns else float("nan"),
+            "m_sec": _media_por_ocorrencia(t_sec, o_sec),
+            "m_med": _media_filtro_por_ocorrencia(df, c_o, c_t),
         })
     return linhas
 
@@ -718,7 +739,7 @@ def _resumo_secao(linhas, rank, total):
         top = max(validos, key=lambda l: l["t_sec"])
         txt = f"O evento que mais consumiu tempo foi <b>{top['rotulo'].lower()}</b> ({_fmt_min_sec(top['t_sec'])}"
         if pd.notna(top["t_med"]) and top["t_med"] > 0:
-            txt += f", {top['t_sec'] / top['t_med']:.1f}× a média do filtro"
+            txt += f", {top['t_sec'] / top['t_med']:.1f}× o tempo total médio das seções do filtro"
         partes.append(txt + ").")
     return " ".join(partes)
 
@@ -730,34 +751,79 @@ def _grafico_tempos(linhas):
         return
     nomes = [l["rotulo"] for l in ev]
     cores = [EVENT_COLOR[n] for n in nomes]
+    claras = [tint(c, 0.62) for c in cores]
     t_sec = [l["t_sec"] / 60 for l in ev]
     t_med = [(0 if pd.isna(l["t_med"]) else l["t_med"]) / 60 for l in ev]
-    fig = go.Figure()
+    m_sec = [None if pd.isna(l["m_sec"]) else l["m_sec"] for l in ev]
+    m_med = [None if pd.isna(l["m_med"]) else l["m_med"] for l in ev]
+
+    fig = make_subplots(
+        rows=2, cols=1, vertical_spacing=0.2, row_heights=[0.5, 0.5],
+        subplot_titles=("Tempo total perdido com o evento (minutos)", "Duração média de cada ocorrência (segundos)"),
+    )
     fig.add_bar(
-        name="Esta seção", x=nomes, y=t_sec, marker_color=cores,
+        name="Tempo total (esta seção)", x=nomes, y=t_sec, marker_color=cores,
         text=[_fmt_min_sec(l["t_sec"]) for l in ev], textposition="outside", cliponaxis=False,
-        hovertemplate="<b>%{x}</b><br>Esta seção: %{y:.1f} min<extra></extra>",
+        hovertemplate="<b>%{x}</b><br>Tempo total nesta seção: %{y:.1f} min<extra></extra>", row=1, col=1,
     )
     fig.add_bar(
-        name="Média do filtro", x=nomes, y=t_med, marker_color=[tint(c, 0.62) for c in cores],
+        name="Tempo total médio por seção (filtro)", x=nomes, y=t_med, marker_color=claras,
         text=[_tempo(l["t_med"]) for l in ev], textposition="outside", cliponaxis=False,
-        hovertemplate="<b>%{x}</b><br>Média do filtro: %{y:.1f} min<extra></extra>",
+        hovertemplate="<b>%{x}</b><br>Tempo total médio por seção do filtro: %{y:.1f} min<extra></extra>", row=1, col=1,
     )
-    fig = apply_base_layout(fig, height=460)
+    fig.add_bar(
+        name="Tempo médio por ocorrência (esta seção)", x=nomes, y=m_sec, marker_color=cores,
+        text=[_fmt_seg(l["m_sec"]) for l in ev], textposition="outside", cliponaxis=False,
+        hovertemplate="<b>%{x}</b><br>Tempo médio por ocorrência nesta seção: %{y:.1f} s<extra></extra>", row=2, col=1,
+    )
+    fig.add_bar(
+        name="Tempo médio por ocorrência (filtro)", x=nomes, y=m_med, marker_color=claras,
+        text=[_fmt_seg(l["m_med"]) for l in ev], textposition="outside", cliponaxis=False,
+        hovertemplate="<b>%{x}</b><br>Tempo médio por ocorrência no filtro: %{y:.1f} s<extra></extra>", row=2, col=1,
+    )
+    fig = apply_base_layout(fig, height=820)
+    topo = max(t_sec + t_med + [1]) * 1.25
+    topo_m = max([v for v in m_sec + m_med if v is not None] + [1]) * 1.25
+    eixo_x = dict(type="category", automargin=True, tickfont=dict(color="#1B2D38", size=13))
     fig.update_layout(
         barmode="group",
-        xaxis=dict(type="category", automargin=True, tickfont=dict(color="#1B2D38", size=13)),
-        yaxis=dict(title="Tempo acumulado (min)", range=[0, max(t_sec + t_med + [1]) * 1.25], automargin=True),
-        margin=dict(t=30, b=50, l=60, r=20),
+        margin=dict(t=50, b=50, l=60, r=20),
+        xaxis=eixo_x, xaxis2=eixo_x,
+        yaxis=dict(title="Minutos", range=[0, topo], automargin=True),
+        yaxis2=dict(title="Segundos", range=[0, topo_m], automargin=True, showgrid=True, gridcolor="#E5ECE8"),
     )
+    fig.update_annotations(font=dict(size=14, color="#174A78"))
     st.plotly_chart(fig, width="stretch")
+
     tabela = pd.DataFrame({
         "Evento": nomes,
-        "Ocorrências": [f"{l['o_sec']:.0f}" if pd.notna(l["o_sec"]) else "—" for l in ev],
-        "Média do filtro": [f"{l['o_med']:.1f}" if pd.notna(l["o_med"]) else "—" for l in ev],
-        "× a média": [f"{l['o_sec'] / l['o_med']:.1f}×" if pd.notna(l["o_sec"]) and l["o_med"] > 0 else "—" for l in ev],
+        "Seção · nº de ocorrências": [fmt_int(l["o_sec"]) if pd.notna(l["o_sec"]) else "—" for l in ev],
+        "Seção · tempo total": [_tempo(l["t_sec"]) for l in ev],
+        "Seção · tempo médio por ocorrência": [_fmt_seg(l["m_sec"]) for l in ev],
+        "Filtro · ocorrências médias por seção": [f"{l['o_med']:.1f}" if pd.notna(l["o_med"]) else "—" for l in ev],
+        "Filtro · tempo total médio por seção": [_tempo(l["t_med"]) for l in ev],
+        "Filtro · tempo médio por ocorrência": [_fmt_seg(l["m_med"]) for l in ev],
     })
     st.dataframe(tabela, hide_index=True, width="stretch")
+
+    ex = next((l for l in ev if pd.notna(l["m_sec"])), None)
+    exemplo = ""
+    if ex is not None:
+        exemplo = (
+            f" Exemplo nesta seção: {ex['rotulo'].lower()} ocorreu {fmt_int(ex['o_sec'])} vez(es), "
+            f"somando {_fmt_min_sec(ex['t_sec'])}; {_fmt_min_sec(ex['t_sec'])} ÷ {fmt_int(ex['o_sec'])} "
+            f"= {_fmt_seg(ex['m_sec'])} por ocorrência."
+        )
+    st.caption(
+        "**Como ler.** *Seção* = números desta seção. *Filtro* = conjunto de seções do filtro atual. "
+        "**Nº de ocorrências:** quantas vezes o evento foi registrado. "
+        "**Tempo total:** soma do tempo perdido em todas as ocorrências. "
+        "**Tempo médio por ocorrência:** tempo total ÷ nº de ocorrências, a duração típica de cada vez que o evento acontece. "
+        "Nas colunas do filtro, *ocorrências médias por seção* e *tempo total médio por seção* são médias entre as seções; "
+        "o *tempo médio por ocorrência* do filtro divide todo o tempo somado pelas ocorrências somadas (não é média de médias). "
+        "Relação: tempo total médio por seção = ocorrências médias por seção × tempo médio por ocorrência. "
+        "\"—\" = evento sem ocorrência ou sem dado. Detalhes na aba Sobre." + exemplo
+    )
 
 
 def _grafico_perfil(urna, df, cols, rotulos):
@@ -876,10 +942,11 @@ def _render_estudo_caso_secao(df, status_filter=None):
     )
     with chart_card(
         "Eventos operacionais",
-        "Barra colorida = esta seção; barra clara = média do filtro. O rótulo traz o tempo acumulado.",
+        "Barra colorida = esta seção; barra clara = filtro. Em cima, o tempo total perdido com cada evento; embaixo, quanto dura cada ocorrência, em média.",
         "Soma do tempo gasto em cada tipo de evento registrado na seção (timeout de biometria, "
         "inatividade do eleitor e teclas indevidas), comparada com a média das seções do filtro atual. "
-        "A tabela abaixo traz o número de ocorrências.",
+        "A tabela abaixo traz o número de ocorrências, o tempo total e a média de tempo por ocorrência, "
+        "contra a média do filtro (tempo total somado ÷ ocorrências somadas).",
     ):
         _grafico_tempos(linhas)
 
