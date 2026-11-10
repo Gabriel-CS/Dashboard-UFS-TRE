@@ -286,3 +286,50 @@ def load_estado_means(nivel_all_path: str) -> dict[str, float]:
         return {c: float(df[c].mean()) for c in cols}
     except Exception:
         return {}
+
+
+_EVENTOS_COLS = {
+    "TIMEOUT_BIOMETRIA": "TPBSEC",
+    "INATIVIDADE": "TTPISEC",
+    "TECLA_INDEVIDA": "TEMPO_TECLA_INDEVIDA_SEG",
+}
+
+
+def _ler_colunas(path: str, cols: list[str]) -> pd.DataFrame:
+    """Lê só `cols`, tentando "," e ";" (load_estado_means só tenta ";")."""
+    alvo = set(cols)
+    for sep in (",", ";"):
+        try:
+            df = pd.read_csv(path, sep=sep, encoding="utf-8", usecols=lambda c: c.strip() in alvo)
+        except Exception:
+            continue
+        if df.shape[1] > 0:
+            df.columns = df.columns.str.strip()
+            return df
+    return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, max_entries=2, ttl=1800)
+def load_estado_totais(paths: tuple) -> dict:
+    """
+    Totais do estado por evento: soma e média por seção de ocorrências e de tempo (s).
+    `paths` deve ser o mesmo conjunto usado em total_secoes_global (app.py).
+    Retorno: {"n_secoes": int, COL_OCORR: {"o_tot","o_med","t_tot","t_med"}}.
+    """
+    cols = list(_EVENTOS_COLS) + list(_EVENTOS_COLS.values())
+    partes = [d for d in (_ler_colunas(p, cols) for p in paths) if not d.empty]
+    if not partes:
+        return {}
+    df = pd.concat(partes, ignore_index=True)
+    nan = float("nan")
+    out: dict = {"n_secoes": int(len(df))}
+    for c_o, c_t in _EVENTOS_COLS.items():
+        o = pd.to_numeric(df[c_o], errors="coerce") if c_o in df.columns else None
+        t = pd.to_numeric(df[c_t], errors="coerce") if c_t in df.columns else None
+        out[c_o] = {
+            "o_tot": float(o.sum()) if o is not None else nan,
+            "o_med": float(o.mean()) if o is not None else nan,
+            "t_tot": float(t.sum()) if t is not None else nan,
+            "t_med": float(t.mean()) if t is not None else nan,
+        }
+    return out
