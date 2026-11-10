@@ -294,20 +294,21 @@ _EVENTOS_COLS = {
     "TECLA_INDEVIDA": "TEMPO_TECLA_INDEVIDA_SEG",
 }
 
-
-def _ler_colunas(path: str, cols: list[str]) -> pd.DataFrame:
-    """Lê só `cols`, tentando "," e ";" (load_estado_means só tenta ";")."""
+def _ler_colunas(path: str, cols: list[str], prefixos: tuple = ()) -> pd.DataFrame:
+    """Lê só `cols` (e colunas que comecem por `prefixos`), tentando "," e ";"."""
     alvo = set(cols)
     for sep in (",", ";"):
         try:
-            df = pd.read_csv(path, sep=sep, encoding="utf-8", usecols=lambda c: c.strip() in alvo)
+            df = pd.read_csv(
+                path, sep=sep, encoding="utf-8",
+                usecols=lambda c: c.strip() in alvo or c.strip().startswith(prefixos),
+            )
         except Exception:
             continue
         if df.shape[1] > 0:
             df.columns = df.columns.str.strip()
             return df
     return pd.DataFrame()
-
 
 @st.cache_data(show_spinner=False, max_entries=2, ttl=1800)
 def load_estado_totais(paths: tuple) -> dict:
@@ -333,3 +334,27 @@ def load_estado_totais(paths: tuple) -> dict:
             "t_med": float(t.mean()) if t is not None else nan,
         }
     return out
+
+_COLS_EXPORT = [
+    "NM_MUNICIPIO", "NR_ZONA", "NR_SECAO", "STATUS", "ATRASO_FILA_MINUTOS",
+    "modelo", "MODELO_URNA_PRINCIPAL", "MODELO_URNA", "MODELO_URNA_PAR_CONTINGENCIA", "URNA_ID",
+    "HOUVE_TROCA_POR_CONTINGENCIA", "EH_URNA_CONTINGENCIA",
+    "TEMPO_SECAO_PRIMEIRO_ULTIMO_VOTO_SEG", "PRIMEIRO_VOTO", "ULTIMO_VOTO", "QTD_PCD",
+    *_EVENTOS_COLS, *_EVENTOS_COLS.values(),
+]
+
+
+@st.cache_data(show_spinner=False, max_entries=2, ttl=1800)
+def load_todas_secoes(paths: tuple) -> pd.DataFrame:
+    """
+    Todas as seções do ano (CSVs de urnas completas), só com as colunas da exportação.
+    `paths` é o mesmo conjunto de total_secoes_global (app.py). Seções repetidas entre
+    arquivos (mesma zona e seção) entram uma única vez.
+    """
+    partes = [d for d in (_ler_colunas(p, _COLS_EXPORT, prefixos=("IDADE_",)) for p in paths) if not d.empty]
+    if not partes:
+        return pd.DataFrame()
+    df = pd.concat(partes, ignore_index=True)
+    if {"NR_ZONA", "NR_SECAO"} <= set(df.columns):
+        df = df.drop_duplicates(subset=["NR_ZONA", "NR_SECAO"], keep="first")
+    return df.reset_index(drop=True)
