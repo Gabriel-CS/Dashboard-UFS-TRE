@@ -300,3 +300,40 @@ def case_head(titulo, subtitulo, status_label, status_cor, chips):
             <div class="case-head-chips">{chips_html}</div>
         </div>
     """)
+
+def tabela_grupos(grupos, linhas):
+    """
+    Tabela com cabeçalho agrupado.
+    grupos: [{"titulo", "cor", "colunas": [str], "destaque": bool (opcional)}]
+    linhas: [{"rotulo", "cor", "celulas": [str]}]  (células já formatadas; "—" = sem dado)
+    """
+    topo = "".join(
+        f'<th class="dt-g dt-gs" colspan="{len(g["colunas"])}" style="--g:{g["cor"]};">{html.escape(g["titulo"])}</th>'
+        for g in grupos
+    )
+    sub = "".join(
+        f'<th class="dt-c{" dt-gs" if j == 0 else ""}" style="--g:{g["cor"]};">{html.escape(c)}</th>'
+        for g in grupos for j, c in enumerate(g["colunas"])
+    )
+    corpo = ""
+    for l in linhas:
+        tds, k = "", 0
+        for g in grupos:
+            for j in range(len(g["colunas"])):
+                v = l["celulas"][k]
+                k += 1
+                cls = ["dt-gs"] if j == 0 else []
+                if g.get("destaque"):
+                    cls.append("dt-hl")
+                if v == "—":
+                    cls.append("dt-nd")
+                tds += f'<td class="{" ".join(cls)}">{html.escape(str(v))}</td>'
+        corpo += (
+            f'<tr><th scope="row" class="dt-evento"><span class="dt-dot" style="background:{l["cor"]};"></span>'
+            f'{html.escape(l["rotulo"])}</th>{tds}</tr>'
+        )
+    return _flatten(
+        '<div class="dt-wrap"><table class="dt"><thead>'
+        f'<tr><th class="dt-evento dt-corner" rowspan="2">Evento</th>{topo}</tr>'
+        f'<tr>{sub}</tr></thead><tbody>{corpo}</tbody></table></div>'
+    )
