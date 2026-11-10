@@ -13,6 +13,7 @@ from src.data_source import (
     count_rows,
     load_csv,
     load_estado_means,
+    load_estado_totais,
     nivel_key,
 )
 from src.tab_criticidade import render_tab_criticidade
@@ -76,6 +77,7 @@ with st.spinner("Carregando e organizando os dados…"):
         count_rows(p) for p in (n_all_path, n_0_path) if os.path.exists(p)
     )
     estado_means = load_estado_means(n_all_path) if os.path.exists(n_all_path) else {}
+    estado_totais = load_estado_totais(tuple(p for p in (n_all_path, n_0_path) if os.path.exists(p)))
 
 analise = UrnasCriticasAnalysis.from_dataframes(
     df_2022=df_voter_log,
@@ -120,7 +122,7 @@ with tab_geo:
     render_tab_geo(ano, status_filter, estado_means)
 
 with tab_crit:
-    render_tab_criticidade(analise.df_criticas, status_filter, estado_means)
+    render_tab_criticidade(analise.df_criticas, status_filter, estado_means, estado_totais)
 
 with tab_modelo:
     render_tab_modelo(analise)
