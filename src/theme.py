@@ -838,6 +838,41 @@ div[class*="st-key-cc"] [data-testid="stVerticalBlock"] {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   Tabela de eventos (estudo de seção)
+   ═══════════════════════════════════════════════════════════════════════════ */
+.dt-wrap {
+    overflow-x: auto;
+    background: #FFFFFF;
+    border: 2px solid #D4CFC4;
+    border-radius: 14px;
+    box-shadow: 0 8px 24px rgba(27, 75, 122, 0.08);
+    margin: 0.9rem 0 0.7rem;
+}
+.dt { width: 100%; min-width: 980px; border-collapse: separate; border-spacing: 0; font-size: 14px; font-variant-numeric: tabular-nums; }
+.dt th, .dt td { padding: 0.7rem 0.95rem; text-align: right; white-space: nowrap; border-bottom: 1px solid #E8E4DA; }
+.dt tbody tr:last-child th, .dt tbody tr:last-child td { border-bottom: none; }
+.dt thead th { background: #F5F3ED; }
+.dt thead .dt-g {
+    background: var(--g, #1B4B7A); color: #FFFFFF; text-align: center;
+    font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+    border-bottom: none;
+}
+.dt thead .dt-c {
+    font-size: 11.5px; line-height: 1.25; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+    color: #527080; white-space: normal; vertical-align: bottom; border-bottom: 3px solid var(--g, #1B4B7A);
+}
+.dt .dt-evento { text-align: left; position: sticky; left: 0; z-index: 1; background: #FFFFFF; color: #1B2D38; font-weight: 800; }
+.dt thead .dt-corner { background: #F5F3ED; color: #527080; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; vertical-align: bottom; border-bottom: 3px solid #D4CFC4; }
+.dt .dt-gs { border-left: 2px solid #E1DCCF; }
+.dt tbody tr:nth-child(even) td, .dt tbody tr:nth-child(even) th { background: #FAF8F3; }
+.dt tbody tr:hover td, .dt tbody tr:hover th { background: #EEF4F8; }
+.dt td.dt-hl { background: #EEF4F8; color: #0F2E4F; font-weight: 900; }
+.dt tbody tr:nth-child(even) td.dt-hl { background: #E6EFF5; }
+.dt .dt-nd { color: #8794AA; font-weight: 500; }
+.dt-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 0.55rem; vertical-align: baseline; }
+.dt-export-label { font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #527080; margin: 0.2rem 0 0.3rem; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
    Geo Panel
    ═══════════════════════════════════════════════════════════════════════════ */
 .geo-panel, .geo-legend-wrap {
