@@ -122,7 +122,11 @@ with tab_geo:
     render_tab_geo(ano, status_filter, estado_means)
 
 with tab_crit:
-    render_tab_criticidade(analise.df_criticas, status_filter, estado_means, estado_totais)
+    render_tab_criticidade(
+        analise.df_criticas, status_filter, estado_means, estado_totais,
+        paths_todas=tuple(cfg["niveis"][n] for n in range(5) if os.path.exists(cfg["niveis"][n])),
+        ano=ano,
+    )
 
 with tab_modelo:
     render_tab_modelo(analise)
