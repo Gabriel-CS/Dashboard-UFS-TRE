@@ -1,5 +1,8 @@
 from __future__ import annotations
 import gc
+import io
+import re
+import unicodedata
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -30,6 +33,7 @@ from src.ui_components import (
     callout,
     case_head,
     fmt_int,
+    tabela_grupos,
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -258,6 +262,7 @@ def render_tab_criticidade(
     df_secoes: pd.DataFrame | None,
     status_filter,
     estado_means: dict | None = None,
+    estado_totais: dict | None = None,
 ) -> None:
     """Renderiza o conteúdo completo da aba 'Análise por Criticidade'."""
     if df_secoes is None or df_secoes.empty:
@@ -279,7 +284,7 @@ def render_tab_criticidade(
             _render_visao_geral(df_secoes)
     
     with tab_secao:
-        _render_estudo_caso_secao(df_secoes, status_filter)
+        _render_estudo_caso_secao(df_secoes, status_filter, estado_totais or {})
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Visão 1 — Comparação entre todos os níveis
@@ -711,19 +716,29 @@ def _fmt_seg(v):
     return f"{v:.1f}s" if v < 60 else _fmt_min_sec(v)
 
 
-def _linhas_eventos(urna, df):
+def _linhas_eventos(urna, df, estado=None):
+    estado = estado or {}
+    nan = float("nan")
     linhas = []
     for rotulo, c_o, c_t in _EVENTOS:
         o_sec = _num(urna.get(c_o))
-        t_sec = _num(urna.get(c_t)) if c_t in urna.index else float("nan")
+        t_sec = _num(urna.get(c_t)) if c_t in urna.index else nan
+        e = estado.get(c_o, {})
         linhas.append({
             "rotulo": rotulo,
             "o_sec": o_sec,
-            "o_med": float(df[c_o].mean()) if c_o in df.columns else float("nan"),
+            "o_med": float(df[c_o].mean()) if c_o in df.columns else nan,
             "t_sec": t_sec,
-            "t_med": float(df[c_t].mean()) if c_t in df.columns else float("nan"),
+            "t_med": float(df[c_t].mean()) if c_t in df.columns else nan,
             "m_sec": _media_por_ocorrencia(t_sec, o_sec),
             "m_med": _media_filtro_por_ocorrencia(df, c_o, c_t),
+            "o_tot_f": float(df[c_o].sum()) if c_o in df.columns else nan,
+            "t_tot_f": float(df[c_t].sum()) if c_t in df.columns else nan,
+            "o_tot_e": e.get("o_tot", nan),
+            "t_tot_e": e.get("t_tot", nan),
+            "o_med_e": e.get("o_med", nan),
+            "t_med_e": e.get("t_med", nan),
+            "m_est": _media_por_ocorrencia(e.get("t_tot", nan), e.get("o_tot", nan)),
         })
     return linhas
 
@@ -795,18 +810,123 @@ def _grafico_tempos(linhas):
     fig.update_annotations(font=dict(size=14, color="#174A78"))
     st.plotly_chart(fig, width="stretch")
 
-    tabela = pd.DataFrame({
-        "Evento": nomes,
-        "Seção · nº de ocorrências": [fmt_int(l["o_sec"]) if pd.notna(l["o_sec"]) else "—" for l in ev],
-        "Seção · tempo total": [_tempo(l["t_sec"]) for l in ev],
-        "Seção · tempo médio por ocorrência": [_fmt_seg(l["m_sec"]) for l in ev],
-        "Filtro · ocorrências médias por seção": [f"{l['o_med']:.1f}" if pd.notna(l["o_med"]) else "—" for l in ev],
-        "Filtro · tempo total médio por seção": [_tempo(l["t_med"]) for l in ev],
-        "Filtro · tempo médio por ocorrência": [_fmt_seg(l["m_med"]) for l in ev],
-    })
-    st.dataframe(tabela, hide_index=True, width="stretch")
 
-    ex = next((l for l in ev if pd.notna(l["m_sec"])), None)
+def _tempo_longo(v):
+    if pd.isna(v):
+        return "—"
+    return _fmt_horas_min(v) if v >= 3600 else _fmt_min_sec(v)
+
+
+def _n(v):
+    return "—" if pd.isna(v) else fmt_int(v)
+
+
+def _med(v):
+    return "—" if pd.isna(v) else f"{v:.1f}".replace(".", ",")
+
+
+def _slug(txt):
+    txt = unicodedata.normalize("NFKD", str(txt)).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "_", txt.lower()).strip("_")
+
+
+def _df_exportacao(linhas, urna, d_all, contexto, estado):
+    """Uma linha por evento; tempos em segundos (valores brutos, sem arredondar o que não é exibição)."""
+    nan = float("nan")
+    st_sel = urna.get("STATUS")
+    base = {
+        "Município": urna.get("NM_MUNICIPIO", ""),
+        "Zona": urna.get("NR_ZONA"),
+        "Seção": urna.get("NR_SECAO"),
+        "Modelo da urna": _modelo_da_urna(urna),
+        "ID da urna": "" if _vazio(urna.get("URNA_ID")) else urna.get("URNA_ID"),
+        "Urna de contingência": "Sim" if bool(_mascara_contingencia(urna.to_frame().T).iloc[0]) else "Não",
+        "Nível de atraso": "" if _vazio(st_sel) else STATUS_LABELS.get(int(st_sel), f"Nível {int(st_sel)}"),
+        "Atraso na fila (min)": _num(urna.get("ATRASO_FILA_MINUTOS")),
+        "Filtro aplicado": contexto,
+        "Seções no filtro": len(d_all),
+        "Seções no estado": estado.get("n_secoes", nan),
+    }
+    linhas_out = []
+    for l in linhas:
+        linhas_out.append({
+            **base,
+            "Evento": l["rotulo"],
+            "Seção · nº de ocorrências": l["o_sec"],
+            "Seção · tempo total (s)": l["t_sec"],
+            "Seção · tempo médio por ocorrência (s)": l["m_sec"],
+            "Filtro · total de ocorrências": l["o_tot_f"],
+            "Filtro · tempo total (s)": l["t_tot_f"],
+            "Filtro · ocorrências médias por seção": l["o_med"],
+            "Filtro · tempo total médio por seção (s)": l["t_med"],
+            "Filtro · tempo médio por ocorrência (s)": l["m_med"],
+            "Estado · total de ocorrências": l["o_tot_e"],
+            "Estado · tempo gasto total (s)": l["t_tot_e"],
+            "Estado · tempo médio por ocorrência (s)": l["m_est"],
+            "Estado · ocorrências médias por seção": l["o_med_e"],
+            "Estado · tempo total médio por seção (s)": l["t_med_e"],
+        })
+    return pd.DataFrame(linhas_out).round(2)
+
+
+def _xlsx_bytes(df):
+    try:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            df.to_excel(w, index=False, sheet_name="Estudo de seção")
+            ws = w.sheets["Estudo de seção"]
+            ws.freeze_panes = "A2"
+            for col in ws.columns:
+                larg = max(len(str(c.value)) if c.value is not None else 0 for c in col)
+                ws.column_dimensions[col[0].column_letter].width = min(larg + 2, 48)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def _render_tabela_eventos(linhas, urna, d_all, contexto, idx, estado):
+    tem_estado = bool(estado.get("n_secoes"))
+    grupos = [
+        {"titulo": "Esta seção", "cor": COLOR_SECAO, "destaque": True,
+         "colunas": ["Ocorrências", "Tempo total", "Tempo médio por ocorrência"]},
+        {"titulo": f"Filtro · média de {fmt_int(len(d_all))} seções", "cor": COLOR_NEUTRAL_GRAY,
+         "colunas": ["Ocorrências médias por seção", "Tempo total médio por seção", "Tempo médio por ocorrência"]},
+    ]
+    if tem_estado:
+        grupos.append({
+            "titulo": f"Estado · {fmt_int(estado['n_secoes'])} seções", "cor": COLOR_PRIMARY_GREEN,
+            "colunas": ["Total de ocorrências", "Tempo gasto (total)", "Tempo médio por ocorrência"],
+        })
+    linhas_tab = []
+    for l in linhas:
+        cel = [_n(l["o_sec"]), _tempo(l["t_sec"]), _fmt_seg(l["m_sec"]),
+               _med(l["o_med"]), _tempo(l["t_med"]), _fmt_seg(l["m_med"])]
+        if tem_estado:
+            cel += [_n(l["o_tot_e"]), _tempo_longo(l["t_tot_e"]), _fmt_seg(l["m_est"])]
+        linhas_tab.append({"rotulo": l["rotulo"], "cor": EVENT_COLOR[l["rotulo"]], "celulas": cel})
+    st.markdown(tabela_grupos(grupos, linhas_tab), unsafe_allow_html=True)
+
+    df_exp = _df_exportacao(linhas, urna, d_all, contexto, estado)
+    nome = f"estudo_secao_{_slug(urna.get('NM_MUNICIPIO', ''))}_z{urna['NR_ZONA']}_s{urna['NR_SECAO']}"
+    chave = f"{contexto}_{idx}"
+    st.markdown('<div class="dt-export-label">Exportar tabela</div>', unsafe_allow_html=True)
+    c_csv, c_xlsx, _ = st.columns([1.1, 1.1, 5])
+    with c_csv:
+        st.download_button(
+            "CSV", data=df_exp.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+            file_name=f"{nome}.csv", mime="text/csv", key=f"_dl_csv_{chave}",
+            icon=":material/download:", on_click="ignore", width="stretch",
+        )
+    xlsx = _xlsx_bytes(df_exp)
+    if xlsx is not None:
+        with c_xlsx:
+            st.download_button(
+                "Excel", data=xlsx, file_name=f"{nome}.xlsx", key=f"_dl_xlsx_{chave}",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                icon=":material/download:", on_click="ignore", width="stretch",
+            )
+
+    ex = next((l for l in linhas if pd.notna(l["m_sec"])), None)
     exemplo = ""
     if ex is not None:
         exemplo = (
@@ -815,14 +935,11 @@ def _grafico_tempos(linhas):
             f"= {_fmt_seg(ex['m_sec'])} por ocorrência."
         )
     st.caption(
-        "**Como ler.** *Seção* = números desta seção. *Filtro* = conjunto de seções do filtro atual. "
-        "**Nº de ocorrências:** quantas vezes o evento foi registrado. "
-        "**Tempo total:** soma do tempo perdido em todas as ocorrências. "
-        "**Tempo médio por ocorrência:** tempo total ÷ nº de ocorrências, a duração típica de cada vez que o evento acontece. "
-        "Nas colunas do filtro, *ocorrências médias por seção* e *tempo total médio por seção* são médias entre as seções; "
-        "o *tempo médio por ocorrência* do filtro divide todo o tempo somado pelas ocorrências somadas (não é média de médias). "
-        "Relação: tempo total médio por seção = ocorrências médias por seção × tempo médio por ocorrência. "
-        "\"—\" = evento sem ocorrência ou sem dado. Detalhes na aba Sobre." + exemplo
+        "**Como ler.** *Esta seção* = números desta seção. *Filtro* = médias entre as seções do filtro atual. "
+        "*Estado* = soma de todas as seções do ano (mesma base do total no cabeçalho): total de ocorrências, tempo gasto e tempo médio por ocorrência. "
+        "**Tempo médio por ocorrência** = tempo total ÷ nº de ocorrências; no filtro e no estado divide o tempo somado pelas ocorrências somadas (não é média de médias). "
+        "\"—\" = evento sem ocorrência ou sem dado. A exportação traz também os totais do filtro e as médias por seção do estado, com tempos em segundos."
+        + exemplo
     )
 
 
@@ -853,7 +970,8 @@ def _grafico_perfil(urna, df, cols, rotulos):
     st.plotly_chart(fig, width="stretch")
 
 
-def _render_estudo_caso_secao(df, status_filter=None):
+def _render_estudo_caso_secao(df, status_filter=None, estado=None):
+    estado = estado or {}
     contexto = _titulo_contexto(status_filter)
 
     st.markdown(
@@ -931,7 +1049,7 @@ def _render_estudo_caso_secao(df, status_filter=None):
          "sub": f"{pcd / eleitores:.1%} dos eleitores" if pd.notna(pcd) and eleitores > 0 else ""},
     ]), unsafe_allow_html=True)
 
-    linhas = _linhas_eventos(urna, d_all)
+    linhas = _linhas_eventos(urna, d_all, estado)
     st.markdown(callout(_resumo_secao(linhas, rank, len(d_all))), unsafe_allow_html=True)
 
     _render_bloco_contingencia(urna)
@@ -949,6 +1067,7 @@ def _render_estudo_caso_secao(df, status_filter=None):
         "contra a média do filtro (tempo total somado ÷ ocorrências somadas).",
     ):
         _grafico_tempos(linhas)
+        _render_tabela_eventos(linhas, urna, d_all, contexto, idx, estado)
 
     st.markdown(
         section_header("Perfil dos eleitores", "Participação de cada grupo na seção, comparada à média do filtro."),
