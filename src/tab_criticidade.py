@@ -1,8 +1,6 @@
 from __future__ import annotations
 import gc
 import io
-import re
-import unicodedata
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -24,6 +22,7 @@ from src.analysis import (
     tint,
 )
 from src.charts import apply_base_layout, donut_chart
+from src.data_source import load_todas_secoes
 from src.ui_components import (
     chart_card,
     section_header,
@@ -263,6 +262,8 @@ def render_tab_criticidade(
     status_filter,
     estado_means: dict | None = None,
     estado_totais: dict | None = None,
+    paths_todas: tuple | None = None,
+    ano: str | None = None,
 ) -> None:
     """Renderiza o conteúdo completo da aba 'Análise por Criticidade'."""
     if df_secoes is None or df_secoes.empty:
@@ -284,7 +285,7 @@ def render_tab_criticidade(
             _render_visao_geral(df_secoes)
     
     with tab_secao:
-        _render_estudo_caso_secao(df_secoes, status_filter, estado_totais or {})
+        _render_estudo_caso_secao(df_secoes, status_filter, estado_totais or {}, paths_todas, ano)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Visão 1 — Comparação entre todos os níveis
@@ -701,7 +702,25 @@ def _rotulos_secoes(d):
 
 
 def _media_por_ocorrencia(tempo, ocorr):
-    return tempo / ocorr if pd.notna(tempo) and pd.notna(ocorr) and ocorr > 0 else float("nan")
+    """
+    Calcula tempo médio por ocorrência.
+    Aceita tanto valores escalares quanto Series do pandas.
+    """
+    # Se ambos são escalares (não Series)
+    if not isinstance(tempo, pd.Series) and not isinstance(ocorr, pd.Series):
+        return tempo / ocorr if pd.notna(tempo) and pd.notna(ocorr) and ocorr > 0 else float("nan")
+    
+    # Se são Series, usar operações vetorizadas
+    tempo = pd.to_numeric(tempo, errors="coerce")
+    ocorr = pd.to_numeric(ocorr, errors="coerce")
+    
+    # Evitar divisão por zero e valores inválidos
+    mask_valida = (ocorr > 0) & tempo.notna() & ocorr.notna()
+    
+    resultado = pd.Series(float("nan"), index=tempo.index if isinstance(tempo, pd.Series) else None)
+    resultado[mask_valida] = tempo[mask_valida] / ocorr[mask_valida]
+    
+    return resultado
 
 
 def _media_filtro_por_ocorrencia(df, c_o, c_t):
@@ -825,66 +844,259 @@ def _med(v):
     return "—" if pd.isna(v) else f"{v:.1f}".replace(".", ",")
 
 
-def _slug(txt):
-    txt = unicodedata.normalize("NFKD", str(txt)).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z0-9]+", "_", txt.lower()).strip("_")
+# ──────────────────────────────────────────────────────────────────────────────
+# Exportação (CSV / Excel)
+#   · Uma linha por seção, colunas agrupadas por evento (sem repetir a identificação da seção).
+#   · Inteiros como inteiros, ausente = célula vazia, tempos em segundos.
+#   · CSV no formato internacional: colunas separadas por vírgula e decimais com ponto.
+# ──────────────────────────────────────────────────────────────────────────────
+_MODELO_COLS = ("modelo", "MODELO_URNA_PRINCIPAL", "MODELO_URNA", "MODELO_URNA_PAR_CONTINGENCIA")
 
 
-def _df_exportacao(linhas, urna, d_all, contexto, estado):
-    """Uma linha por evento; tempos em segundos (valores brutos, sem arredondar o que não é exibição)."""
-    nan = float("nan")
-    st_sel = urna.get("STATUS")
-    base = {
-        "Município": urna.get("NM_MUNICIPIO", ""),
-        "Zona": urna.get("NR_ZONA"),
-        "Seção": urna.get("NR_SECAO"),
-        "Modelo da urna": _modelo_da_urna(urna),
-        "ID da urna": "" if _vazio(urna.get("URNA_ID")) else urna.get("URNA_ID"),
-        "Urna de contingência": "Sim" if bool(_mascara_contingencia(urna.to_frame().T).iloc[0]) else "Não",
-        "Nível de atraso": "" if _vazio(st_sel) else STATUS_LABELS.get(int(st_sel), f"Nível {int(st_sel)}"),
-        "Atraso na fila (min)": _num(urna.get("ATRASO_FILA_MINUTOS")),
-        "Filtro aplicado": contexto,
-        "Seções no filtro": len(d_all),
-        "Seções no estado": estado.get("n_secoes", nan),
-    }
-    linhas_out = []
-    for l in linhas:
-        linhas_out.append({
-            **base,
-            "Evento": l["rotulo"],
-            "Seção · nº de ocorrências": l["o_sec"],
-            "Seção · tempo total (s)": l["t_sec"],
-            "Seção · tempo médio por ocorrência (s)": l["m_sec"],
-            "Filtro · total de ocorrências": l["o_tot_f"],
-            "Filtro · tempo total (s)": l["t_tot_f"],
-            "Filtro · ocorrências médias por seção": l["o_med"],
-            "Filtro · tempo total médio por seção (s)": l["t_med"],
-            "Filtro · tempo médio por ocorrência (s)": l["m_med"],
-            "Estado · total de ocorrências": l["o_tot_e"],
-            "Estado · tempo gasto total (s)": l["t_tot_e"],
-            "Estado · tempo médio por ocorrência (s)": l["m_est"],
-            "Estado · ocorrências médias por seção": l["o_med_e"],
-            "Estado · tempo total médio por seção (s)": l["t_med_e"],
+def _serie_num(df, col):
+    if col in df.columns:
+        return pd.to_numeric(df[col], errors="coerce")
+    return pd.Series(float("nan"), index=df.index)
+
+
+def _serie_texto(df, col):
+    if col not in df.columns:
+        return pd.Series("", index=df.index, dtype="string")
+    return df[col].astype("string").str.strip().fillna("")
+
+
+def _serie_inteira(df, col):
+    """Inteiro nullable (sem o '.0' de float); se a coluna não for numérica, devolve o texto original."""
+    if col not in df.columns:
+        return pd.Series(pd.NA, index=df.index, dtype="Int64")
+    s = pd.to_numeric(df[col], errors="coerce")
+    if s.notna().sum() == df[col].notna().sum():
+        return s.round().astype("Int64")
+    return _serie_texto(df, col)
+
+
+def _serie_id(df, col):
+    if col not in df.columns:
+        return pd.Series("", index=df.index, dtype="string")
+    s = pd.to_numeric(df[col], errors="coerce")
+    if s.notna().sum() == df[col].notna().sum() and s.notna().any():
+        return s.round().astype("Int64").astype("string").fillna("")
+    return _serie_texto(df, col)
+
+
+def _serie_modelo(df):
+    cand = [c for c in _MODELO_COLS if c in df.columns]
+    if not cand:
+        return pd.Series("Não identificado", index=df.index, dtype="string")
+    m = df[cand].astype("string").apply(lambda s: s.str.strip()).replace("", pd.NA)
+    return m.bfill(axis=1).iloc[:, 0].fillna("Não identificado")
+
+def _df_secoes_export(df, estado=None, ranquear=True):
+    """
+    Tabela de exportação: uma linha por seção.
+    `estado` (opcional) adiciona colunas de comparação com a média do estado.
+    Todas as colunas possuem nomes claros e identificáveis.
+    """
+    estado = estado or {}
+    out = pd.DataFrame(index=df.index)
+    
+    # ── Identificação ──────────────────────────────────────────────────────────
+    muni = _serie_texto(df, "NM_MUNICIPIO")
+    so_codigo = len(muni) > 0 and muni.str.fullmatch(r"\d+").all()
+    out["Município"] = muni if not so_codigo else pd.Series(
+        ["Código: " + str(m) for m in muni], index=df.index
+    )
+    out["Zona"] = _serie_inteira(df, "NR_ZONA")
+    out["Seção"] = _serie_inteira(df, "NR_SECAO")
+    out["Modelo da urna"] = _serie_modelo(df)
+    out["ID da urna"] = _serie_id(df, "URNA_ID")
+    out["Urna de contingência"] = _mascara_contingencia(df).map(
+        {True: "Sim", False: "Não"}
+    )
+    
+    # ── Classificação do atraso ────────────────────────────────────────────────
+    nivel = _serie_num(df, "STATUS")
+    out["Nível de atraso"] = nivel.round().astype("Int64")
+    out["Classificação do atraso"] = nivel.map(
+        lambda v: "" if pd.isna(v) else STATUS_LABELS.get(int(v), f"Nível {int(v)}")
+    )
+    atraso = _serie_num(df, "ATRASO_FILA_MINUTOS")
+    out["Atraso na fila (min)"] = atraso
+    if ranquear:
+        out["Ranking de atraso"] = atraso.rank(
+            method="min", ascending=False
+        ).astype("Int64")
+    
+    # ── Duração e horários ─────────────────────────────────────────────────────
+    out["Duração da votação (s)"] = _serie_num(df, "TEMPO_SECAO_PRIMEIRO_ULTIMO_VOTO_SEG")
+    out["Primeiro voto"] = _serie_texto(df, "PRIMEIRO_VOTO")
+    out["Último voto"] = _serie_texto(df, "ULTIMO_VOTO")
+    
+    # ── Eleitorado ─────────────────────────────────────────────────────────────
+    cols_idade = [c for c in df.columns if c.startswith("IDADE_") and "Inválido" not in c]
+    if cols_idade:
+        out["Total de eleitores"] = (
+            df[cols_idade]
+            .apply(pd.to_numeric, errors="coerce")
+            .fillna(0)
+            .sum(axis=1)
+            .round()
+            .astype("Int64")
+        )
+    else:
+        out["Total de eleitores"] = pd.Series(pd.NA, index=df.index, dtype="Int64")
+    out["Eleitores PCD"] = _serie_num(df, "QTD_PCD").round().astype("Int64")
+    
+    # ── Eventos operacionais ───────────────────────────────────────────────────
+    for rotulo, c_o, c_t in _EVENTOS:
+        o, t = _serie_num(df, c_o), _serie_num(df, c_t)
+        
+        # Prefixo único para cada evento
+        prefixo = f"{rotulo}"
+        
+        out[f"{prefixo} - Ocorrências"] = o.round().astype("Int64")
+        out[f"{prefixo} - Tempo total (s)"] = t.round(2)
+        out[f"{prefixo} - Tempo médio por ocorrência (s)"] = _media_por_ocorrencia(t, o).round(2)
+        
+        # Adiciona comparação com estado se disponível
+        if estado and c_o in estado:
+            e = estado[c_o]
+            if e.get("t_med") and e["t_med"] > 0:
+                razao = (t / e["t_med"]).round(2)
+                out[f"{prefixo} - Razão tempo total / média estado"] = razao
+    
+    return out
+
+
+def _df_referencia_estado(estado):
+    """
+    Tabela de referência com as médias do estado para cada evento.
+    Usada como aba adicional no arquivo Excel.
+    """
+    linhas = []
+    for rotulo, c_o, c_t in _EVENTOS:
+        e = estado.get(c_o, {})
+        linhas.append({
+            "Evento": rotulo,
+            "Total de seções no estado": estado.get("n_secoes"),
+            "Total de ocorrências": e.get("o_tot"),
+            "Tempo total acumulado (s)": e.get("t_tot"),
+            "Ocorrências médias por seção": e.get("o_med"),
+            "Tempo total médio por seção (s)": e.get("t_med"),
+            "Tempo médio por ocorrência (s)": _media_por_ocorrencia(
+                e.get("t_tot", float("nan")), 
+                e.get("o_tot", float("nan"))
+            ),
         })
-    return pd.DataFrame(linhas_out).round(2)
+    return pd.DataFrame(linhas).round(2)
+
+def _aparar(v):
+    """Até 2 casas, sem zeros à direita: 5072.0 -> '5072', 4.39 -> '4.39', NaN -> ''.
+
+    Mantém o ponto como separador decimal: o CSV usa vírgula como separador de
+    colunas, então um decimal com vírgula quebraria a linha em colunas extras.
+    """
+    if pd.isna(v):
+        return ""
+    return f"{v:.2f}".rstrip("0").rstrip(".")
 
 
-def _xlsx_bytes(df):
+def _csv_bytes(df):
+    """CSV no formato internacional: colunas separadas por vírgula, decimais com ponto.
+
+    O formato anterior (sep=';' com decimais do tipo '246,7') só era lido
+    corretamente por ferramentas configuradas para ponto-e-vírgula. Qualquer
+    leitor que usa vírgula como separador (pandas sem argumentos, Excel em
+    inglês, visualizadores de CSV) quebrava cada número decimal em duas
+    colunas: os dados saíam deslocados e as colunas extras ficavam sem nome —
+    as "colunas não identificadas".
+    """
+    d = df.copy()
+    for c in d.select_dtypes(include="float").columns:
+        d[c] = d[c].map(_aparar)
+    return d.to_csv(index=False, sep=",", na_rep="").encode("utf-8-sig")
+
+
+def _referencia_de(df):
+    """Totais e médias por evento calculados sobre `df` (mesma estrutura de estado_totais)."""
+    ref = {"n_secoes": int(len(df))}
+    for _, c_o, c_t in _EVENTOS:
+        o, t = _serie_num(df, c_o), _serie_num(df, c_t)
+        ref[c_o] = {"o_tot": float(o.sum()), "o_med": float(o.mean()), "t_tot": float(t.sum()), "t_med": float(t.mean())}
+    return ref
+
+
+def _xlsx_bytes(df, abas_extra=None):
     try:
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as w:
-            df.to_excel(w, index=False, sheet_name="Estudo de seção")
-            ws = w.sheets["Estudo de seção"]
-            ws.freeze_panes = "A2"
-            for col in ws.columns:
-                larg = max(len(str(c.value)) if c.value is not None else 0 for c in col)
-                ws.column_dimensions[col[0].column_letter].width = min(larg + 2, 48)
+            abas = {"Estudo de seção": df, **(abas_extra or {})}
+            for nome, d in abas.items():
+                d.to_excel(w, index=False, sheet_name=nome[:31])
+                ws = w.sheets[nome[:31]]
+                ws.freeze_panes = "A2"
+                for col in ws.columns:
+                    larg = max(len(str(c.value)) if c.value is not None else 0 for c in col)
+                    ws.column_dimensions[col[0].column_letter].width = min(larg + 2, 48)
         return buf.getvalue()
     except Exception:
         return None
 
 
-def _render_tabela_eventos(linhas, urna, d_all, contexto, idx, estado):
+@st.cache_data(show_spinner="Calculando as estatísticas de todas as seções…", max_entries=2, ttl=1800)
+def _exportacao_estado(paths: tuple):
+    """(csv, xlsx, nº de seções) de todas as seções do estado, a partir dos CSVs por nível (0 a 4)."""
+    df = load_todas_secoes(paths)
+    if df.empty:
+        return None, None, 0
+    ref = _referencia_de(df)  # referência = o próprio conjunto exportado (estado completo)
+    tabela = _df_secoes_export(df, ref).dropna(axis=1, how="all")
+    ordem = [c for c in ("Ranking de atraso", "Município", "Código do município", "Zona", "Seção") if c in tabela.columns]
+    tabela = tabela.sort_values(ordem, na_position="last").reset_index(drop=True)
+    xlsx = _xlsx_bytes(tabela, {"Referência do estado": _df_referencia_estado(ref)})
+    return _csv_bytes(tabela), xlsx, len(tabela)
+
+
+def _render_exportacao_estado(paths, ano):
+    """Bloco de download de todas as seções do estado (independente do filtro e da seção escolhida)."""
+    if not paths:
+        return
+    with st.expander(":material/download: Exportar todas as seções do estado", expanded=False):
+        st.caption(
+            "Uma linha por seção, com identificação, nível e atraso e, para cada evento operacional "
+            "(timeout de biometria, inatividade, teclas indevidas), ocorrências, tempo total, tempo médio por "
+            "ocorrência e quanto o tempo total representa da média do estado (todas as seções, níveis 0 a 4). "
+            "Tempos em segundos. Ignora o filtro de nível e o de contingência. "
+            "O CSV usa o formato internacional (colunas separadas por vírgula e decimais com ponto), "
+            "lido com as colunas identificadas por pandas, Google Sheets, Power BI e Excel. "
+            "No Excel em português, se ele abrir tudo em uma coluna, use o botão Excel ao lado ou "
+            "importe o CSV em \"Dados › De Texto/CSV\". "
+            "No Excel, a aba \"Referência do estado\" traz as médias usadas."
+        )
+        chave = f"_exp_estado_{ano}"
+        if not st.session_state.get(chave):
+            if st.button("Preparar arquivos", key=f"{chave}_btn", icon=":material/table_view:"):
+                st.session_state[chave] = True
+            if not st.session_state.get(chave):
+                return
+        csv, xlsx, n = _exportacao_estado(tuple(paths))
+        if not n:
+            st.warning("Não foi possível ler as seções do estado.")
+            return
+        st.markdown(f"**{fmt_int(n)} seções** prontas para exportar.")
+        c_csv, c_xlsx, _ = st.columns([1.1, 1.1, 5])
+        nome = f"secoes_estado_{ano}"
+        with c_csv:
+            st.download_button("CSV", data=csv, file_name=f"{nome}.csv", mime="text/csv",
+                               key=f"{chave}_csv", icon=":material/download:", on_click="ignore", width="stretch")
+        if xlsx is not None:
+            with c_xlsx:
+                st.download_button("Excel", data=xlsx, file_name=f"{nome}.xlsx", key=f"{chave}_xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                   icon=":material/download:", on_click="ignore", width="stretch")
+
+
+def _render_tabela_eventos(linhas, d_all, estado):
     tem_estado = bool(estado.get("n_secoes"))
     grupos = [
         {"titulo": "Esta seção", "cor": COLOR_SECAO, "destaque": True,
@@ -906,26 +1118,6 @@ def _render_tabela_eventos(linhas, urna, d_all, contexto, idx, estado):
         linhas_tab.append({"rotulo": l["rotulo"], "cor": EVENT_COLOR[l["rotulo"]], "celulas": cel})
     st.markdown(tabela_grupos(grupos, linhas_tab), unsafe_allow_html=True)
 
-    df_exp = _df_exportacao(linhas, urna, d_all, contexto, estado)
-    nome = f"estudo_secao_{_slug(urna.get('NM_MUNICIPIO', ''))}_z{urna['NR_ZONA']}_s{urna['NR_SECAO']}"
-    chave = f"{contexto}_{idx}"
-    st.markdown('<div class="dt-export-label">Exportar tabela</div>', unsafe_allow_html=True)
-    c_csv, c_xlsx, _ = st.columns([1.1, 1.1, 5])
-    with c_csv:
-        st.download_button(
-            "CSV", data=df_exp.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
-            file_name=f"{nome}.csv", mime="text/csv", key=f"_dl_csv_{chave}",
-            icon=":material/download:", on_click="ignore", width="stretch",
-        )
-    xlsx = _xlsx_bytes(df_exp)
-    if xlsx is not None:
-        with c_xlsx:
-            st.download_button(
-                "Excel", data=xlsx, file_name=f"{nome}.xlsx", key=f"_dl_xlsx_{chave}",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                icon=":material/download:", on_click="ignore", width="stretch",
-            )
-
     ex = next((l for l in linhas if pd.notna(l["m_sec"])), None)
     exemplo = ""
     if ex is not None:
@@ -938,7 +1130,7 @@ def _render_tabela_eventos(linhas, urna, d_all, contexto, idx, estado):
         "**Como ler.** *Esta seção* = números desta seção. *Filtro* = médias entre as seções do filtro atual. "
         "*Estado* = soma de todas as seções do ano (mesma base do total no cabeçalho): total de ocorrências, tempo gasto e tempo médio por ocorrência. "
         "**Tempo médio por ocorrência** = tempo total ÷ nº de ocorrências; no filtro e no estado divide o tempo somado pelas ocorrências somadas (não é média de médias). "
-        "\"—\" = evento sem ocorrência ou sem dado. A exportação traz também os totais do filtro e as médias por seção do estado, com tempos em segundos."
+        "\"—\" = evento sem ocorrência ou sem dado. Para exportar, use o bloco \"Exportar todas as seções do estado\", no topo desta aba."
         + exemplo
     )
 
@@ -970,7 +1162,7 @@ def _grafico_perfil(urna, df, cols, rotulos):
     st.plotly_chart(fig, width="stretch")
 
 
-def _render_estudo_caso_secao(df, status_filter=None, estado=None):
+def _render_estudo_caso_secao(df, status_filter=None, estado=None, paths_todas=None, ano=None):
     estado = estado or {}
     contexto = _titulo_contexto(status_filter)
 
@@ -981,6 +1173,7 @@ def _render_estudo_caso_secao(df, status_filter=None, estado=None):
         ),
         unsafe_allow_html=True,
     )
+    _render_exportacao_estado(paths_todas, ano)
     if df.empty:
         st.info(f'Não há seções em "{contexto}" neste cenário.')
         return
@@ -1067,7 +1260,7 @@ def _render_estudo_caso_secao(df, status_filter=None, estado=None):
         "contra a média do filtro (tempo total somado ÷ ocorrências somadas).",
     ):
         _grafico_tempos(linhas)
-        _render_tabela_eventos(linhas, urna, d_all, contexto, idx, estado)
+        _render_tabela_eventos(linhas, d_all, estado)
 
     st.markdown(
         section_header("Perfil dos eleitores", "Participação de cada grupo na seção, comparada à média do filtro."),
